@@ -20,6 +20,8 @@ export interface DispatchAttemptManifest {
   timed_out: boolean;
   /** provider session id（与 SpecCraft Run ID 分离） */
   session_id?: string;
+  /** Task ID（v0.5 Task dispatch 必有；legacy dispatch 无） */
+  task_id?: string;
   /** 实际执行的 command + args（不含 Secret；如需 redact 由 adapter 处理） */
   command?: string[];
   /** 相对 attempt 目录的文件名 */

@@ -90,6 +90,7 @@ export async function readDispatchAttempt(
     ...(typeof parsed.signal === 'string' ? { signal: parsed.signal } : {}),
     timed_out: parsed.timed_out === true,
     ...(typeof parsed.session_id === 'string' ? { session_id: parsed.session_id } : {}),
+    ...(typeof parsed.task_id === 'string' ? { task_id: parsed.task_id } : {}),
     ...(Array.isArray(parsed.command) ? { command: parsed.command.map(String) } : {}),
     stdout_file: typeof parsed.stdout_file === 'string' ? parsed.stdout_file : 'stdout.log',
     stderr_file: typeof parsed.stderr_file === 'string' ? parsed.stderr_file : 'stderr.log',
@@ -107,6 +108,41 @@ export async function readLatestDispatchAttempt(
   const next = await nextDispatchAttempt(speccraftDir, runId);
   if (next <= 1) return null;
   return readDispatchAttempt(speccraftDir, runId, next - 1);
+}
+
+/**
+ * 读取某 task + adapter 的最新 dispatch attempt 的 session id（用于 Task resume）。
+ * 只按 run + task + adapter 过滤，避免 Task B resume 到 Task A 的 session。
+ */
+export async function findLatestSessionForTask(
+  speccraftDir: string,
+  runId: string,
+  taskId: string,
+  adapterId: string,
+): Promise<string | null> {
+  const attempts = await listDispatchAttempts(speccraftDir, runId);
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const m = await readDispatchAttempt(speccraftDir, runId, attempts[i]);
+    if (m && m.task_id === taskId && m.adapter === adapterId && m.session_id) {
+      return m.session_id;
+    }
+  }
+  return null;
+}
+
+/** 列出某 task 的全部 dispatch attempt 序号（按 task_id 过滤） */
+export async function listDispatchAttemptsForTask(
+  speccraftDir: string,
+  runId: string,
+  taskId: string,
+): Promise<number[]> {
+  const attempts = await listDispatchAttempts(speccraftDir, runId);
+  const out: number[] = [];
+  for (const a of attempts) {
+    const m = await readDispatchAttempt(speccraftDir, runId, a);
+    if (m && m.task_id === taskId) out.push(a);
+  }
+  return out;
 }
 
 /** 列出全部 dispatch attempt 序号（递增） */

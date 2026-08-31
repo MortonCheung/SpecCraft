@@ -30,6 +30,8 @@ export interface DispatchOnceOptions {
   freshSession: boolean;
   model?: string;
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
+  /** Task ID（v0.5 Task dispatch 必填；legacy 省略） */
+  taskId?: string;
 }
 
 export interface DispatchOnceResult {
@@ -86,6 +88,7 @@ export async function dispatchOnce(options: DispatchOnceOptions): Promise<Dispat
     signal: proc.signal,
     timed_out: proc.timedOut,
     ...(normalized.sessionId ? { session_id: normalized.sessionId } : {}),
+    ...(options.taskId ? { task_id: options.taskId } : {}),
     command: [invocation.command, ...invocation.args],
     stdout_file: 'stdout.log',
     stderr_file: 'stderr.log',
