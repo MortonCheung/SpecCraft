@@ -19,7 +19,21 @@ export interface TaskPackageInput {
   runContext: string;
   /** execution-guard skill 正文 */
   executionGuard: string;
+  /** 是否运行在隔离 worktree（v0.6 parallel route）；true 时注入 isolation guard */
+  isolatedWorkspace?: boolean;
 }
+
+/** v0.6 隔离工作区守卫（ADR 0007 §11.6）。 */
+const ISOLATED_WORKSPACE_GUARD = [
+  'You are working inside an isolated SpecCraft workspace.',
+  '',
+  'Do not commit.',
+  'Do not create/switch branches.',
+  'Do not merge/rebase/cherry-pick/reset/clean/stash/worktree.',
+  'Do not modify .speccraft runtime state.',
+  'Only modify files inside the declared Task Scope.',
+  'Runtime owns Git commit and integration.',
+].join('\n');
 
 /** 渲染 Task context.md */
 export function renderTaskContext(input: TaskPackageInput): string {
@@ -42,6 +56,15 @@ export function renderTaskPrompt(input: TaskPackageInput): string {
   const deps = t.dependsOn.length > 0 ? t.dependsOn.map((d) => `- ${d}`).join('\n') : '- （无）';
   const scope = t.scope.paths.map((p) => `- ${p}`).join('\n');
   const commands = t.verification.commands.map((c) => `- \`${c}\``).join('\n');
+
+  const isolation = input.isolatedWorkspace
+    ? [
+        `## 隔离工作区（Isolated Workspace）`,
+        '',
+        ISOLATED_WORKSPACE_GUARD,
+        '',
+      ].join('\n')
+    : '';
 
   return [
     `# SpecCraft Task Prompt`,
@@ -66,6 +89,7 @@ export function renderTaskPrompt(input: TaskPackageInput): string {
     '',
     commands,
     '',
+    isolation,
     `## Execution Guard（施工守卫）`,
     '',
     input.executionGuard.trim(),
@@ -75,7 +99,8 @@ export function renderTaskPrompt(input: TaskPackageInput): string {
     '- 禁止修改 Scope 之外的文件；',
     '- 禁止重新设计产品；',
     '- 禁止新增 Task；',
-    '- 禁止改变整体技术栈 / Workflow / Runtime 语义。',
+    '- 禁止改变整体技术栈 / Workflow / Runtime 语义；',
+    '- 禁止 git commit / checkout / switch / branch / merge / rebase / cherry-pick / reset / clean / worktree / stash（Git 归属 SpecCraft Runtime）。',
     '',
     `## 完成后应报告什么`,
     '',

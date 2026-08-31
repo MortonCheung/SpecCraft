@@ -30,6 +30,10 @@ export interface DispatchTaskOptions {
   executionGuard: string;
   freshSession: boolean;
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
+  /** 隔离 worktree 根目录（v0.6 parallel route）；省略则用 projectRoot */
+  workspaceRoot?: string;
+  /** Workspace Attempt 序号（v0.6 parallel route）；用于 session isolation 与 evidence */
+  workspaceAttempt?: number;
 }
 
 export interface DispatchTaskResult {
@@ -52,7 +56,7 @@ export async function dispatchTask(options: DispatchTaskOptions): Promise<Dispat
     throw new Error(`Task ${taskId} 状态为 ${manifest.status}，只有 ready/failed 可 dispatch`);
   }
 
-  // 生成 Task Package（context.md + prompt.md）
+  // 生成 Task Package（context.md + prompt.md；parallel route 注入 isolation guard）
   await generateTaskPackage({
     speccraftDir,
     runId,
@@ -60,15 +64,23 @@ export async function dispatchTask(options: DispatchTaskOptions): Promise<Dispat
     task,
     runContext: options.runContext,
     executionGuard: options.executionGuard,
+    isolatedWorkspace: !!options.workspaceRoot,
   });
 
   const promptFile = path.join(taskDir(speccraftDir, runId, taskId), 'prompt.md');
   const prompt = await readFile(promptFile, 'utf8');
 
-  // session isolation：run + task + adapter
+  // session isolation：run + task + adapter（v0.6 parallel：+ workspaceAttempt）
   let sessionId: string | undefined;
   if (!options.freshSession) {
-    sessionId = (await findLatestSessionForTask(speccraftDir, runId, taskId, options.adapter.id)) ?? undefined;
+    sessionId =
+      (await findLatestSessionForTask(
+        speccraftDir,
+        runId,
+        taskId,
+        options.adapter.id,
+        options.workspaceAttempt,
+      )) ?? undefined;
   }
 
   // task → in_progress
@@ -87,6 +99,8 @@ export async function dispatchTask(options: DispatchTaskOptions): Promise<Dispat
     ...(options.adapterConfig?.model ? { model: options.adapterConfig.model } : {}),
     ...(options.adapterConfig ? { adapterConfig: options.adapterConfig } : {}),
     taskId,
+    ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
+    ...(options.workspaceAttempt !== undefined ? { workspaceAttempt: options.workspaceAttempt } : {}),
   });
 
   // 刷新 manifest

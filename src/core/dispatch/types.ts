@@ -22,6 +22,10 @@ export interface DispatchAttemptManifest {
   session_id?: string;
   /** Task ID（v0.5 Task dispatch 必有；legacy dispatch 无） */
   task_id?: string;
+  /** Workspace Attempt 序号（v0.6 parallel route 必有；sequential/legacy 无） */
+  workspace_attempt?: number;
+  /** 隔离 worktree 绝对路径（v0.6 parallel route 必有） */
+  workspace_root?: string;
   /** 实际执行的 command + args（不含 Secret；如需 redact 由 adapter 处理） */
   command?: string[];
   /** 相对 attempt 目录的文件名 */

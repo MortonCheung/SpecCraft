@@ -21,6 +21,10 @@ export interface VerifyTaskOptions {
   runId: string;
   taskId: string;
   verification: TaskVerification;
+  /** 隔离 worktree 根目录（v0.6 parallel route）；省略则用 projectRoot */
+  workspaceRoot?: string;
+  /** PASS 是否直接 completed（sequential 默认 true；parallel isolated 传 false） */
+  completeOnPass?: boolean;
   now?: Date;
 }
 
@@ -45,8 +49,11 @@ export async function verifyTask(options: VerifyTaskOptions): Promise<VerifyTask
   const startedAt = options.now?.toISOString() ?? new Date().toISOString();
   const start = Date.now();
 
+  // isolated verification（ADR 0007 §11.7）：parallel route 命令在 workspaceRoot 中执行
+  const effectiveRoot = options.workspaceRoot ?? options.projectRoot;
+
   const runResult = await runTaskVerificationCommands({
-    projectRoot: options.projectRoot,
+    projectRoot: effectiveRoot,
     commands: options.verification.commands,
     timeoutSeconds: options.verification.timeoutSeconds,
   });
@@ -87,7 +94,12 @@ export async function verifyTask(options: VerifyTaskOptions): Promise<VerifyTask
   // 更新 task manifest
   manifest.verificationAttempts = [...manifest.verificationAttempts, attempt];
   if (runResult.passed) {
-    manifest.status = 'completed';
+    // isolated route（completeOnPass=false）：PASS 不直接 completed，等待 integration（ADR 0007 §11.7）
+    if (options.completeOnPass === false) {
+      // 保持 in_progress；integration 成功后由 parallel orchestrator 置 completed
+    } else {
+      manifest.status = 'completed';
+    }
   } else {
     manifest.status = 'failed';
     manifest.lastError = `Task Verification FAIL（attempt ${attempt}）`;

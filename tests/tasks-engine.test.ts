@@ -192,3 +192,26 @@ test('M5.3：generateTaskPackage 生成 context.md + prompt.md', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('M6.4：isolated workspace prompt guard 注入', () => {
+  const graph = diamond();
+  const task = graph.tasks[0];
+  const base = {
+    speccraftDir: '/tmp/x',
+    runId: 'r',
+    graph,
+    task,
+    runContext: '# ctx',
+    executionGuard: '# guard',
+  };
+
+  const seq = renderTaskPrompt(base);
+  assert.equal(seq.includes('You are working inside an isolated SpecCraft workspace.'), false);
+
+  const par = renderTaskPrompt({ ...base, isolatedWorkspace: true });
+  assert.match(par, /You are working inside an isolated SpecCraft workspace\./);
+  assert.match(par, /Do not commit\./);
+  assert.match(par, /Runtime owns Git commit and integration\./);
+  // 通用 Git ownership 禁止对所有 route 生效
+  assert.match(seq, /禁止 git commit/);
+});

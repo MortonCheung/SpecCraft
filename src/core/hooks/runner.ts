@@ -22,6 +22,8 @@ export interface RunHooksOptions {
   hooks: HookDefinition[];
   /** 额外 env 变量 */
   env: HookEnvironment;
+  /** 命令执行 cwd（v0.6 parallel route：isolated workspaceRoot；省略用 projectRoot） */
+  workspaceRoot?: string;
   defaultTimeoutSeconds?: number;
 }
 
@@ -55,6 +57,7 @@ export async function runHooks(options: RunHooksOptions): Promise<RunHooksOutcom
       env,
       timeoutSeconds: hook.timeout_seconds ?? defaultTimeout,
       index: results.length + 1,
+      ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
     });
     results.push(result);
     if (!result.passed) anyFailed = true;
@@ -72,6 +75,8 @@ interface RunSingleOptions {
   env: HookEnvironment;
   timeoutSeconds: number;
   index: number;
+  /** 隔离 worktree 根目录（v0.6 parallel route）；省略用 projectRoot */
+  workspaceRoot?: string;
 }
 
 async function runSingleHook(options: RunSingleOptions): Promise<HookResult> {
@@ -84,7 +89,7 @@ async function runSingleHook(options: RunSingleOptions): Promise<HookResult> {
     (resolve) => {
       const child = spawn(options.hook.command, {
         shell: true,
-        cwd: options.projectRoot,
+        cwd: options.workspaceRoot ?? options.projectRoot,
         env: { ...process.env, ...toEnv(options.env) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });

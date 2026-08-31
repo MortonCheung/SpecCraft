@@ -9,7 +9,13 @@ import { initProject } from '../src/core/init.js';
 import { createRun, runDir } from '../src/core/execution/store.js';
 import { runDispatchProcess } from '../src/core/dispatch/runner.js';
 import { dispatchOnce } from '../src/core/dispatch/orchestrator.js';
-import { nextDispatchAttempt, readLatestDispatchAttempt, listDispatchAttempts } from '../src/core/dispatch/store.js';
+import {
+  nextDispatchAttempt,
+  readLatestDispatchAttempt,
+  listDispatchAttempts,
+  reserveDispatchAttempt,
+  findLatestSessionForTask,
+} from '../src/core/dispatch/store.js';
 import type { CliExecutionAdapter, NormalizedDispatchResult } from '../src/core/execution/adapters/types.js';
 
 const fakeAgentPath = fileURLToPath(new URL('./fixtures/fake-agent.mjs', import.meta.url));
@@ -23,8 +29,8 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-/** 构造一个以 fake-agent 为后端的 cli adapter */
-function fakeAdapter(mode: string): CliExecutionAdapter {
+/** 构造一个以 fake-agent 为后端的 cli adapter（可指定 session id） */
+function fakeAdapter(mode: string, session = 'session-abc123'): CliExecutionAdapter {
   return {
     id: 'fake',
     kind: 'cli',
@@ -43,7 +49,7 @@ function fakeAdapter(mode: string): CliExecutionAdapter {
       args: [fakeAgentPath],
       cwd: input.projectRoot,
       stdin: input.prompt,
-      env: { FAKE_AGENT_MODE: mode, FAKE_AGENT_SESSION: 'session-abc123' },
+      env: { FAKE_AGENT_MODE: mode, FAKE_AGENT_SESSION: session },
       timeoutMs: 10000,
     }),
     normalize: async (input) => {
@@ -232,6 +238,84 @@ test('M4.2：dispatch FAIL（exit != 0）→ result.status failed，run 不结�
     const { readRun } = await import('../src/core/execution/store.js');
     const runBack = await readRun(speccraftDir, run.id);
     assert.equal(runBack.status, 'prepared');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('M6.4 DoD #13：reserveDispatchAttempt 并发 20 次 → 20 个唯一序号 + 目录（无覆盖）', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'speccraft-disp-cc-'));
+  try {
+    const { speccraftDir } = await initProject({ projectRoot: root });
+    const run = await createRun(speccraftDir, { id: 'run-disp-cc' });
+
+    // 20 个并发预约
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () => reserveDispatchAttempt(speccraftDir, run.id)),
+    );
+    const unique = new Set(attempts);
+    assert.equal(unique.size, 20, `20 个预约应全唯一（实际 ${unique.size}）`);
+    assert.equal(Math.min(...attempts), 1);
+    assert.equal(Math.max(...attempts), 20);
+
+    // 每个序号的目录都已真实创建，且没有覆盖（list 仍为 1..20）
+    const listed = await listDispatchAttempts(speccraftDir, run.id);
+    assert.deepEqual(listed, Array.from({ length: 20 }, (_, i) => i + 1));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('M6.4 DoD #14#15：session isolation（同 workspace retry 复用，新 attempt / 其他 task 不复用）', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'speccraft-disp-si-'));
+  try {
+    const { speccraftDir } = await initProject({ projectRoot: root });
+    const run = await createRun(speccraftDir, { id: 'run-disp-si' });
+
+    // 三个独立 session：A/w001、A/w002、B/w001
+    await dispatchOnce({
+      speccraftDir,
+      projectRoot: root,
+      runId: run.id,
+      adapter: fakeAdapter('jsonl', 'session-A-w001'),
+      prompt: '# p',
+      freshSession: true,
+      taskId: 'A',
+      workspaceAttempt: 1,
+    });
+    await dispatchOnce({
+      speccraftDir,
+      projectRoot: root,
+      runId: run.id,
+      adapter: fakeAdapter('jsonl', 'session-A-w002'),
+      prompt: '# p',
+      freshSession: true,
+      taskId: 'A',
+      workspaceAttempt: 2,
+    });
+    await dispatchOnce({
+      speccraftDir,
+      projectRoot: root,
+      runId: run.id,
+      adapter: fakeAdapter('jsonl', 'session-B-w001'),
+      prompt: '# p',
+      freshSession: true,
+      taskId: 'B',
+      workspaceAttempt: 1,
+    });
+
+    // 同 workspace retry → 精确命中该 attempt 的 session
+    assert.equal(await findLatestSessionForTask(speccraftDir, run.id, 'A', 'fake', 1), 'session-A-w001');
+    // 新 workspace attempt → 不复用旧 session（拿到 w002 的 session）
+    assert.equal(await findLatestSessionForTask(speccraftDir, run.id, 'A', 'fake', 2), 'session-A-w002');
+    // 不同 task → 不共享 A 的 session
+    assert.equal(await findLatestSessionForTask(speccraftDir, run.id, 'B', 'fake', 1), 'session-B-w001');
+    // 不存在的 workspace attempt → null（不回落旧 session）
+    assert.equal(await findLatestSessionForTask(speccraftDir, run.id, 'A', 'fake', 999), null);
+    // 不存在的 task → null
+    assert.equal(await findLatestSessionForTask(speccraftDir, run.id, 'C', 'fake', 1), null);
+    // 无 workspaceAttempt 过滤时（sequential/legacy）→ 任一该 task 的最新 session
+    assert.equal(await findLatestSessionForTask(speccraftDir, run.id, 'A', 'fake'), 'session-A-w002');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

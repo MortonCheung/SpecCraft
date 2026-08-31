@@ -12,7 +12,7 @@
 import path from 'node:path';
 import type { CliExecutionAdapter, NormalizedDispatchResult } from '../execution/adapters/types.js';
 import { runDispatchProcess } from './runner.js';
-import { nextDispatchAttempt, writeDispatchAttempt } from './store.js';
+import { reserveDispatchAttempt, writeDispatchAttempt } from './store.js';
 import { dispatchAttemptDir } from './types.js';
 import type { DispatchAttemptManifest } from './types.js';
 import { runDir } from '../execution/store.js';
@@ -32,6 +32,10 @@ export interface DispatchOnceOptions {
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
   /** Task ID（v0.5 Task dispatch 必填；legacy 省略） */
   taskId?: string;
+  /** 隔离 worktree 绝对路径（v0.6 parallel route；省略则用 projectRoot） */
+  workspaceRoot?: string;
+  /** Workspace Attempt 序号（v0.6 parallel route） */
+  workspaceAttempt?: number;
 }
 
 export interface DispatchOnceResult {
@@ -42,10 +46,15 @@ export interface DispatchOnceResult {
 
 /** 执行一次 dispatch attempt（append-only，不覆盖历史） */
 export async function dispatchOnce(options: DispatchOnceOptions): Promise<DispatchOnceResult> {
-  const attempt = await nextDispatchAttempt(options.speccraftDir, options.runId);
+  // 并发安全抢号（ADR 0007 §11.1）：绝不让两个 parallel dispatch 写同一目录
+  const attempt = await reserveDispatchAttempt(options.speccraftDir, options.runId);
+
+  // isolated dispatch（ADR 0007 §11.5）：parallel route 的 agent cwd = workspaceRoot，
+  // 中心 evidence 仍写 canonical .speccraft（runDir 不变）。
+  const effectiveRoot = options.workspaceRoot ?? options.projectRoot;
 
   const invocation = await options.adapter.buildInvocation({
-    projectRoot: options.projectRoot,
+    projectRoot: effectiveRoot,
     runDir: runDir(options.speccraftDir, options.runId),
     prompt: options.prompt,
     ...(options.promptFile ? { promptFile: options.promptFile } : {}),
@@ -58,7 +67,7 @@ export async function dispatchOnce(options: DispatchOnceOptions): Promise<Dispat
   const proc = await runDispatchProcess({ invocation });
 
   const normalized = await options.adapter.normalize({
-    projectRoot: options.projectRoot,
+    projectRoot: effectiveRoot,
     runDir: runDir(options.speccraftDir, options.runId),
     adapterId: options.adapter.id,
     exitCode: proc.exitCode,
@@ -89,6 +98,8 @@ export async function dispatchOnce(options: DispatchOnceOptions): Promise<Dispat
     timed_out: proc.timedOut,
     ...(normalized.sessionId ? { session_id: normalized.sessionId } : {}),
     ...(options.taskId ? { task_id: options.taskId } : {}),
+    ...(options.workspaceAttempt !== undefined ? { workspace_attempt: options.workspaceAttempt } : {}),
+    ...(options.workspaceRoot ? { workspace_root: options.workspaceRoot } : {}),
     command: [invocation.command, ...invocation.args],
     stdout_file: 'stdout.log',
     stderr_file: 'stderr.log',

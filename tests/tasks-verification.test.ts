@@ -131,3 +131,28 @@ test('M5.5：nextTaskVerificationAttempt 递增', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('M6.4 DoD #9：isolated route PASS（completeOnPass=false）→ task 保持 in_progress', async () => {
+  const { root, speccraftDir, runId } = await setup();
+  try {
+    const m = await readTaskManifest(speccraftDir, runId, 'a');
+    m!.status = 'in_progress';
+    await writeTaskManifest(speccraftDir, runId, m!);
+
+    const result = await verifyTask({
+      speccraftDir,
+      projectRoot: root,
+      runId,
+      taskId: 'a',
+      verification: { commands: ['true'], timeoutSeconds: 30 },
+      completeOnPass: false,
+    });
+    assert.equal(result.passed, true);
+
+    const after = await readTaskManifest(speccraftDir, runId, 'a');
+    assert.equal(after?.status, 'in_progress');
+    assert.deepEqual(after?.verificationAttempts, [1]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
