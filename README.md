@@ -14,18 +14,61 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 ## 当前开发阶段
 
-**Milestone 0 — Foundation & Research**（基础与开源组件调研）
+**v0.2 — Execution & Verification Runtime**
 
-当前阶段工作：
+已实现（v0.1 → v0.2 累计）：
 
-- 建立基础仓库结构；
-- 固化核心 Workflow；
-- 对六个目标开源项目进行结构级工程勘察；
-- 建立 Component Matrix，决定未来哪些能力复用 / 改造 / 集成 / 只借思想 / 放弃。
+- 声明式 16 阶段 Workflow（`schemas/default-workflow.yaml`），
+  阶段推进、门禁（gate）、`auto_complete` 全部由声明决定；
+- `.speccraft` 文件优先工作现场：workflow / state / artifacts / runs，
+  无数据库；
+- Context Compiler：按 workflow dependency graph 编译上游上下文；
+- Execution Run：`speccraft prepare` 把已批准的 Execution Manual 编译成
+  可直接交给任意施工 Agent 的 Execution Package；
+- Verification Runtime：`speccraft verify` 执行目标项目声明的验证命令，
+  失败在同一 Run 内返工，直到 `verification = completed`；
+- 不依赖任何特定 AI 厂商（Claude / Codex / Trae / OpenCode）。
+
+尚未实现（后续版本）：Owner Acceptance 完整机制、Handoff 完整机制、
+多 Agent 编排、SaaS 后端、Web 控制台、云同步等。
+
+## CLI
+
+```bash
+speccraft init [projectRoot] [--force]     # 初始化工作现场
+speccraft status                           # 阶段状态 + Active Run
+speccraft next                             # 下一步引导（含 Execution 生命周期）
+speccraft approve <stage> [--by <who>]     # Owner 批准（硬门禁）
+speccraft artifact <stage>                 # 生成阶段 artifact 并推进
+speccraft prepare [--adapter manual]       # 编译 Execution Package + 创建 Run
+speccraft implement start [--run <id>]     # 显式开始施工
+speccraft implement finish --report <path> # 显式结束施工（提交报告）
+speccraft verify                           # 运行项目验证命令（PASS/FAIL）
+speccraft validate                         # 状态/execution 一致性检查
+```
+
+## Execution 生命周期
+
+```
+READY_TO_IMPLEMENT
+      ↓ speccraft prepare            （生成 context.md + agent-prompt.md）
+PREPARED（run 创建，active_run 写入）
+      ↓ speccraft implement start
+IMPLEMENTATION = in_progress
+      ↓ speccraft implement finish --report <path>
+IMPLEMENTATION = completed → awaiting_verification
+      ↓ speccraft verify
+PASS → verification = completed      FAIL → 重开 implementation（同一 Run 返工）
+```
+
+关键原则：Git 有改动 / commit 存在 / 报告文件存在，都不代表施工完成。
+只有显式命令能改变 Runtime State；验证用真实命令的 exit code 判断，
+「修 bug 不产生新的 workflow stage」。
 
 ## 核心 Workflow
 
 见 [docs/workflow/core-workflow.md](docs/workflow/core-workflow.md)。
+架构决策见 [docs/decisions/](docs/decisions/)（含 ADR 0003 v0.2）。
 
 ## Inspirations / Research Targets
 
@@ -42,7 +85,9 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 本仓库当前 **未达到 Production Ready**。
 
-当前并未实现：Workflow Engine、状态机、Commands、Hooks、Skills、Agent Adapter，以及任何对具体 Agent 平台（Claude / Codex / Trae 等）的集成。
+v0.2 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
+Verification Runtime 与一个 `manual` Adapter。尚未实现：Owner Acceptance、
+Handoff、具体 Agent 平台（Claude / Codex / Trae 等）的 API 集成。
 
 ## License
 
