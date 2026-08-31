@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import yaml from 'js-yaml';
 import type { Workflow, StageDefinition, StageGate } from '../types.js';
+import { applyLegacyAutoComplete } from './legacy.js';
 
 const VALID_GATE_TYPES = new Set(['all_required_completed', 'owner_approval']);
 
@@ -58,11 +59,16 @@ export function validateWorkflow(input: unknown): Workflow {
     }
     const gate: StageGate = { type: gateType as StageGate['type'] };
 
+    // YAML 使用 snake_case（auto_complete），内部统一 camelCase（autoComplete）。
+    const autoComplete =
+      typeof s.auto_complete === 'boolean' ? s.auto_complete : undefined;
+
     stages.push({
       id,
       requires,
       produces,
       gate,
+      ...(autoComplete === undefined ? {} : { autoComplete }),
       skill: typeof s.skill === 'string' ? s.skill : undefined,
       template: typeof s.template === 'string' ? s.template : undefined,
       next: typeof s.next === 'string' ? s.next : undefined,
@@ -80,7 +86,9 @@ export function validateWorkflow(input: unknown): Workflow {
     }
   }
 
-  return { name, version, stages };
+  // Legacy v0.1 兼容：把旧语义一次性归一化为显式 autoComplete（见 legacy.ts）。
+  // 归一化之后，Runtime 各处只读 autoComplete，不再需要任何 legacy 判断。
+  return applyLegacyAutoComplete({ name, version, stages });
 }
 
 function toStrArray(value: unknown, label: string): string[] {

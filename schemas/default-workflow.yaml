@@ -1,8 +1,10 @@
 name: default
-version: "0.1.0"
+version: "0.2.0"
 
-# SpecCraft 默认 Workflow（声明式，见 ADR 0002 §7）
+# SpecCraft 默认 Workflow（声明式，见 ADR 0002 §7 / ADR 0003 §3）
 # 16 阶段；gate.type 取值：all_required_completed | owner_approval
+# auto_complete: true 表示 gate 满足时自动级联完成（缺省 false）。
+# implementation / owner-acceptance 必须显式推进，故保持缺省。
 
 stages:
   - id: idea
@@ -54,6 +56,7 @@ stages:
   - id: owner-approval
     requires: [design]
     produces: []
+    auto_complete: true
     gate: { type: owner_approval }
 
   - id: build-brief
@@ -80,11 +83,14 @@ stages:
   - id: ready-to-implement
     requires: [execution-manual]
     produces: []
+    auto_complete: true
     gate: { type: all_required_completed }
 
   - id: implementation
     requires: [ready-to-implement]
     produces: []
+    # 不声明 auto_complete：必须由 `speccraft implement start` 显式开始，
+    # 并由 `speccraft implement finish --report <path>` 显式结束。
     gate: { type: all_required_completed }
 
   - id: verification

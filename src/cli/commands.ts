@@ -2,7 +2,7 @@ import path from 'node:path';
 import { access } from 'node:fs/promises';
 import { initProject } from '../core/init.js';
 import { loadProject } from '../core/project.js';
-import { completeStage, approveStage, artifactDependencies, V01_TERMINAL_STAGE } from '../core/advance.js';
+import { completeStage, approveStage, artifactDependencies } from '../core/advance.js';
 import {
   nextStageId,
   findWaitingApproval,
@@ -62,12 +62,6 @@ export async function cmdNext(): Promise<void> {
   const next = nextStageId(workflow, state);
   if (!next) {
     console.log('没有可进入的下一阶段。');
-    return;
-  }
-  const terminalIndex = workflow.stages.findIndex((s) => s.id === V01_TERMINAL_STAGE);
-  const nextIndex = workflow.stages.findIndex((s) => s.id === next);
-  if (terminalIndex >= 0 && nextIndex > terminalIndex) {
-    console.log(`已到达 v0.1 终点（${V01_TERMINAL_STAGE}），暂不进入 v0.2 阶段。`);
     return;
   }
   console.log(`下一步阶段：${next}`);

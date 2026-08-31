@@ -69,6 +69,12 @@ export interface StageDefinition {
   /** 本阶段产出的 Artifact id 列表 */
   produces: string[];
   gate: StageGate;
+  /**
+   * gate 满足时是否自动级联完成（ADR 0003 §3）。
+   * 该行为完全由 Workflow 声明决定，Runtime 不得依据 stage id 或版本号猜测。
+   * 缺省等价于 false。
+   */
+  autoComplete?: boolean;
   /** 关联的 Skill id（可选） */
   skill?: string;
   /** 关联的模板路径（可选） */

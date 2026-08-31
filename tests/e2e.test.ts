@@ -64,7 +64,8 @@ test('DoD #1#2#13：空项目 init 并完整推进到 ready-to-implement', async
     }
 
     assert.equal(state.stages['ready-to-implement'].status, 'completed');
-    assert.equal(state.current_stage, 'ready-to-implement');
+    // M2.0：去掉版本截止后，current_stage 前进到下一个可进入阶段
+    assert.equal(state.current_stage, 'implementation');
     assert.deepEqual(validateState(workflow, state), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
