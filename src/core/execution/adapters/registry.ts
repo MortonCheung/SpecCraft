@@ -7,6 +7,10 @@
 
 import type { ExecutionAdapter, AdapterProbeResult } from './types.js';
 import { manualAdapter } from './manual.js';
+import { codexAdapter } from './codex.js';
+import { claudeAdapter } from './claude.js';
+import { opencodeAdapter } from './opencode.js';
+import { traeAdapter } from './trae.js';
 
 const adapters = new Map<string, ExecutionAdapter>();
 
@@ -33,6 +37,10 @@ export function listAdapters(): ExecutionAdapter[] {
 /** 显式注册内置 adapter（registry 初始化入口） */
 export function registerBuiltinAdapters(): void {
   registerAdapter(manualAdapter);
+  registerAdapter(codexAdapter);
+  registerAdapter(claudeAdapter);
+  registerAdapter(opencodeAdapter);
+  registerAdapter(traeAdapter);
 }
 
 /** 注册表是否已有该 adapter */
@@ -46,3 +54,6 @@ export function isValidAdapterId(id: string): boolean {
 }
 
 export type { AdapterProbeResult };
+
+// 模块加载时初始化内置 adapter（幂等）
+registerBuiltinAdapters();

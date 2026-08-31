@@ -67,6 +67,16 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
       if (run.handoffId) {
         console.log(`  handoff: ${run.handoffId}`);
       }
+      // latest dispatch attempt（如有）
+      try {
+        const { readLatestDispatchAttempt } = await import('../core/dispatch/store.js');
+        const latest = await readLatestDispatchAttempt(speccraftDir, run.id);
+        if (latest) {
+          console.log(`  dispatch attempt: ${latest.attempt}（${latest.adapter}，${latest.status}${latest.session_id ? `，session ${latest.session_id}` : ''}）`);
+        }
+      } catch {
+        // 读取 dispatch 失败不阻塞 status
+      }
       console.log('');
     } else {
       console.log(`Active Run: ${state.active_run}（manifest 缺失，请运行 speccraft validate）`);
@@ -159,15 +169,26 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
         '',
         'Next:',
         '  continue implementation',
-        '  speccraft implement finish --report <file>',
+        '  speccraft dispatch（自动）或 speccraft implement finish --report <file>',
       ].join('\n');
     }
     // 返工中：上一次 verification 未通过
     if (run?.status === 'verification_failed') {
       return [
         'Verification 未通过。',
-        '在当前 Run 内修复后重新执行 implement finish。',
+        '在当前 Run 内修复后重新执行 speccraft dispatch（自动）或 implement finish。',
       ].join('\n');
+    }
+    // dispatch 失败过 → 提示重新 dispatch
+    if (run) {
+      const { readLatestDispatchAttempt } = await import('../core/dispatch/store.js');
+      const latest = await readLatestDispatchAttempt(speccraftDir, run.id);
+      if (latest && latest.status !== 'succeeded') {
+        return [
+          `Dispatch Attempt ${latest.attempt} 失败（${latest.adapter}）。`,
+          '修复 adapter/config 后重新执行 speccraft dispatch。',
+        ].join('\n');
+      }
     }
     return [
       'Agent 正在施工。',
@@ -183,12 +204,18 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
     return '下一步：speccraft prepare';
   }
   if (run.status === 'prepared') {
+    const { loadProjectConfig } = await import('../core/project.js');
+    const config = await loadProjectConfig(speccraftDir);
+    const defaultAdapter = config.execution?.defaultAdapter ?? 'manual';
+    if (defaultAdapter !== 'manual') {
+      return `下一步：speccraft dispatch --adapter ${defaultAdapter}`;
+    }
     return '下一步：speccraft implement start';
   }
   if (run.status === 'verification_failed') {
     return [
       'Verification 未通过。',
-      '在当前 Run 内修复后重新执行 implement finish。',
+      '在当前 Run 内修复后重新执行 speccraft dispatch（自动）或 implement finish。',
     ].join('\n');
   }
   return '下一步：speccraft implement start';
@@ -412,6 +439,135 @@ async function resolveFeedback(
   return undefined;
 }
 
+/** speccraft adapters list：列出全部 adapter（不发真实模型请求） */
+export async function cmdAdaptersList(projectRoot: string = process.cwd()): Promise<void> {
+  const { listAdapters } = await import('../core/execution/adapters/registry.js');
+  const adapters = listAdapters();
+  console.log('Adapters:');
+  for (const a of adapters) {
+    const capabilities = a.kind === 'cli'
+      ? `[${Object.entries(a.capabilities).filter(([, v]) => v).map(([k]) => k).join(', ')}]`
+      : '';
+    console.log(`  ${a.id.padEnd(10)} kind=${a.kind} ${capabilities}`);
+  }
+}
+
+/** speccraft adapters doctor [id]：本机能力诊断（不发 AI 请求） */
+export async function cmdAdaptersDoctor(
+  adapterId: string | undefined,
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { getAdapter, listAdapterIds } = await import('../core/execution/adapters/registry.js');
+  const ids = adapterId ? [adapterId] : listAdapterIds();
+  let failed = false;
+  for (const id of ids) {
+    const adapter = getAdapter(id);
+    if (!adapter) {
+      console.log(`${id}: unknown adapter`);
+      failed = true;
+      continue;
+    }
+    if (adapter.kind === 'manual') {
+      console.log(`${id}: manual (always available)`);
+      continue;
+    }
+    const probe = await adapter.probe();
+    if (probe.installed) {
+      console.log(`${id}: installed (${probe.version ?? 'version unknown'}) binary=${probe.binary ?? adapter.id}`);
+    } else {
+      console.log(`${id}: NOT installed${probe.error ? ` — ${probe.error}` : ''}`);
+      failed = true;
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+/** speccraft dispatch [--adapter <id>] [--run <id>] [--fresh-session] */
+export async function cmdDispatch(
+  opts: { adapter?: string; run?: string; freshSession?: boolean },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { workflow, state, speccraftDir } = await loadProject(projectRoot);
+  const { loadProjectConfig } = await import('../core/project.js');
+  const config = await loadProjectConfig(speccraftDir);
+
+  const { getActiveRun, readRun } = await import('../core/execution/store.js');
+  const run = opts.run
+    ? await readRun(speccraftDir, opts.run)
+    : await getActiveRun(speccraftDir, state.active_run);
+  if (!run) {
+    console.error('错误：没有活跃的 Execution Run，无法 dispatch。');
+    return 1;
+  }
+
+  const { getAdapter } = await import('../core/execution/adapters/registry.js');
+  const adapterId = opts.adapter ?? config.execution?.defaultAdapter ?? 'manual';
+  const adapter = getAdapter(adapterId);
+  if (!adapter) {
+    console.error(`错误：未知 adapter ${adapterId}。`);
+    return 1;
+  }
+  if (adapter.kind !== 'cli') {
+    console.error('错误：manual adapter 不支持 dispatch，请用 speccraft implement start。');
+    return 1;
+  }
+
+  const adapterConfig = config.execution?.adapters[adapterId];
+  const promptFile = path.join(speccraftDir, 'runs', run.id, 'agent-prompt.md');
+
+  // before_dispatch hook（blocking）
+  const hookCtx = {
+    projectRoot,
+    speccraftDir,
+    runId: run.id,
+    env: {
+      SPECCRAFT_EVENT: 'before_dispatch',
+      SPECCRAFT_PROJECT_ROOT: projectRoot,
+      SPECCRAFT_DIR: speccraftDir,
+      SPECCRAFT_STAGE: 'implementation',
+      SPECCRAFT_ADAPTER: adapter.id,
+    },
+  };
+  const { runBeforeHooks, runAfterHooks } = await import('../core/hooks/lifecycle.js');
+  const before = await runBeforeHooks(hookCtx, config.hooks, 'before_dispatch');
+  if (before.blocked) {
+    console.error('错误：before_dispatch hook 失败，已中止 dispatch。');
+    return 1;
+  }
+
+  const { dispatchExecution } = await import('../core/dispatch/lifecycle.js');
+  const result = await dispatchExecution({
+    projectRoot,
+    speccraftDir,
+    workflow,
+    state,
+    run,
+    adapter,
+    promptFile,
+    freshSession: opts.freshSession === true,
+    ...(adapterConfig ? { adapterConfig } : {}),
+  });
+
+  // after_dispatch hook（non-rollback）
+  await runAfterHooks(
+    { ...hookCtx, env: { ...hookCtx.env, SPECCRAFT_EVENT: 'after_dispatch', SPECCRAFT_DISPATCH_ATTEMPT: String(result.attempt) } },
+    config.hooks,
+    'after_dispatch',
+  );
+
+  if (!result.success) {
+    console.error(`Dispatch Attempt ${result.attempt} 失败（adapter ${adapter.id}）。`);
+    console.error('implementation 保持 in_progress。修复 adapter/config 后重新 dispatch。');
+    return 1;
+  }
+
+  console.log(`Dispatch Attempt ${result.attempt} 成功（adapter ${adapter.id}${result.sessionId ? `，session ${result.sessionId}` : ''}）。`);
+  console.log(`已生成报告：.speccraft/runs/${run.id}/${result.reportFile}`);
+  console.log('implementation = completed');
+  console.log('下一步：speccraft verify');
+  return 0;
+}
+
 /** speccraft validate（状态一致性 + execution 一致性） */
 export async function cmdValidate(projectRoot: string = process.cwd()): Promise<number> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
@@ -566,6 +722,44 @@ async function validateExecutionConsistency(speccraftDir: string, state: State):
   // Invariant 6：acceptance record 引用真实存在的 run + verification attempt
   const refCheck = await checkAcceptanceReferences(speccraftDir, run.id);
   if (refCheck) violations.push(refCheck);
+
+  // ---- Dispatch 一致性（ADR 0005 §4） ----
+  violations.push(...(await checkDispatchConsistency(speccraftDir, state, run.id)));
+
+  return violations;
+}
+
+/** Dispatch invariant：attempt 编号连续、success/fail 与 implementation 状态一致 */
+async function checkDispatchConsistency(
+  speccraftDir: string,
+  state: State,
+  runId: string,
+): Promise<string[]> {
+  const violations: string[] = [];
+  const { listDispatchAttempts, readDispatchAttempt } = await import('../core/dispatch/store.js');
+  const attempts = await listDispatchAttempts(speccraftDir, runId);
+  if (attempts.length === 0) return violations;
+
+  // 编号必须连续 1..N
+  for (let i = 0; i < attempts.length; i++) {
+    if (attempts[i] !== i + 1) {
+      violations.push(`dispatch attempt 编号不连续：期望 ${i + 1}，实际 ${attempts[i]}`);
+      break;
+    }
+  }
+
+  const latest = await readDispatchAttempt(speccraftDir, runId, attempts[attempts.length - 1]);
+  if (!latest) return violations;
+  const impl = state.stages['implementation']?.status ?? 'pending';
+
+  // dispatch success 但 implementation 未 completed → 不一致（应已复用 finish）
+  if (latest.status === 'succeeded' && impl !== 'completed') {
+    violations.push(`latest dispatch 成功，但 implementation 为 ${impl}（应 completed）`);
+  }
+  // dispatch failed 但 implementation completed → 不一致（失败不得完成）
+  if (latest.status !== 'succeeded' && impl === 'completed') {
+    violations.push(`latest dispatch 失败，但 implementation 为 completed（不应完成）`);
+  }
 
   return violations;
 }

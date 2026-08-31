@@ -201,7 +201,7 @@ test('M2.2：未知 adapter 拒绝', async () => {
   const { root } = await makeReadyProject();
   try {
     await assert.rejects(
-      () => prepareExecution({ projectRoot: root, adapterId: 'codex' }),
+      () => prepareExecution({ projectRoot: root, adapterId: 'no-such-adapter-xyz' }),
       /未知 execution adapter/,
     );
   } finally {

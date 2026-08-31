@@ -13,6 +13,9 @@ import {
   cmdAccept,
   cmdReject,
   cmdHandoff,
+  cmdAdaptersList,
+  cmdAdaptersDoctor,
+  cmdDispatch,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -58,7 +61,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function usage(): string {
   return [
-    'SpecCraft v0.3 — Human-Directed AI Workflow System',
+    'SpecCraft v0.4 — Human-Directed AI Workflow System',
     '',
     '用法：speccraft <command> [options]',
     '',
@@ -68,9 +71,13 @@ function usage(): string {
     '  next                            查看下一步（含 Execution / Acceptance 生命周期）',
     '  approve <stage> [--by <who>]    批准指定阶段（Owner 硬门禁）',
     '  artifact <stage>                为指定阶段生成 artifact 并推进',
-    '  prepare [--adapter manual]      编译 Execution Package 并创建 Run',
+    '  prepare [--adapter <id>]        编译 Execution Package 并创建 Run',
     '  implement start [--run <id>]     显式开始施工（implementation = in_progress）',
     '  implement finish --report <path> 显式结束施工并提交执行报告',
+    '  adapters list                   列出全部 adapter',
+    '  adapters doctor [id]            本机 Provider 能力诊断（不发 AI 请求）',
+    '  dispatch [--adapter <id>] [--run <id>] [--fresh-session]',
+    '                                   调用本地 CLI Agent 自动施工',
     '  verify                           运行项目验证命令（PASS/FAIL）',
     '  accept [--note|--file] [--by]    Owner 验收通过',
     '  reject --reason <text>|--file    Owner 拒绝（重开 implementation，同 Run 返工）',
@@ -112,6 +119,23 @@ async function main(): Promise<number> {
       case 'prepare':
         await cmdPrepare(args.flags.adapter);
         return 0;
+      case 'adapters': {
+        const sub = args.positionals[0];
+        if (sub === 'list') {
+          await cmdAdaptersList();
+          return 0;
+        }
+        if (sub === 'doctor') {
+          return await cmdAdaptersDoctor(args.positionals[1]);
+        }
+        throw new Error('adapters 需要 list 或 doctor 子命令');
+      }
+      case 'dispatch':
+        return await cmdDispatch({
+          adapter: args.flags.adapter,
+          run: args.flags.run,
+          freshSession: args.flags['fresh-session'] !== undefined,
+        });
       case 'implement': {
         const sub = args.positionals[0];
         if (sub === 'start') {

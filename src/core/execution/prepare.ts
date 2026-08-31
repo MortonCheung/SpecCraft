@@ -20,7 +20,7 @@ import { loadProjectConfig } from '../project.js';
 import { skillsDir } from '../../utils/paths.js';
 import { captureGitSnapshot } from './git.js';
 import { createRun, writeRun, runDir } from './store.js';
-import { manualAdapter } from './adapters/manual.js';
+import { getAdapter, listAdapterIds } from './adapters/registry.js';
 import type { PreparedExecution } from './adapters/types.js';
 
 export interface PrepareOptions {
@@ -67,10 +67,14 @@ export async function prepareExecution(options: PrepareOptions): Promise<Prepare
   // 6. 创建 Run
   const manifest = await createRun(speccraftDir, { baseGit: gitSnapshot ?? undefined });
 
-  // 7-9. 通过 adapter 生成 Execution Package 并落盘
-  const adapter = options.adapterId === undefined || options.adapterId === 'manual'
-    ? manualAdapter
-    : unknownAdapter(options.adapterId);
+  // 7-9. 通过 adapter 生成 Execution Package 并落盘（Registry lookup）
+  const adapterId = options.adapterId ?? 'manual';
+  const adapter = getAdapter(adapterId);
+  if (!adapter) {
+    throw new Error(
+      `未知 execution adapter：${adapterId}（可用：${listAdapterIds().join(', ')}）`,
+    );
+  }
 
   const prepared: PreparedExecution = await adapter.prepare({
     speccraftDir,
@@ -133,8 +137,4 @@ function completedStages(workflow: Workflow, state: State): string[] {
 async function readSkill(id: string): Promise<string> {
   const file = path.join(skillsDir, id, 'SKILL.md');
   return readFile(file, 'utf8');
-}
-
-function unknownAdapter(id: string): never {
-  throw new Error(`未知 execution adapter：${id}（v0.2 仅支持 manual）`);
 }

@@ -38,13 +38,13 @@ function fakeCliAdapter(id: string, caps: Partial<CliExecutionAdapter['capabilit
 }
 
 test('M4.1：registry 显式注册 + 确定性 lookup', () => {
-  // 干净的 registry 里注册 manual
-  registerAdapter(manualAdapter);
+  // registry 模块加载时已内置注册 5 个 adapter（manual/codex/claude/opencode/trae）
   assert.equal(getAdapter('manual')?.id, 'manual');
   assert.equal(hasAdapter('manual'), true);
-  assert.equal(hasAdapter('codex'), false);
+  assert.equal(hasAdapter('codex'), true);
+  assert.equal(getAdapter('codex')?.kind, 'cli');
 
-  registerAdapter(fakeCliAdapter('codex'));
+  registerAdapter(fakeCliAdapter('codex')); // 覆盖注册
   assert.equal(getAdapter('codex')?.kind, 'cli');
   assert.ok(listAdapterIds().includes('manual'));
   assert.ok(listAdapterIds().includes('codex'));
