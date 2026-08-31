@@ -227,6 +227,10 @@ export function stringifyWaveManifest(manifest: WaveManifest): string {
       base_commit: manifest.baseCommit,
       max_parallel: manifest.maxParallel,
       tasks: manifest.tasks,
+      // v0.7 §49：taskId → Executor Profile（wave evidence）
+      ...(manifest.executors && Object.keys(manifest.executors).length > 0
+        ? { executors: manifest.executors }
+        : {}),
       ...(manifest.startedAt ? { started_at: manifest.startedAt } : {}),
       ...(manifest.finishedAt ? { finished_at: manifest.finishedAt } : {}),
       integration_order: manifest.integrationOrder,
@@ -261,6 +265,14 @@ export function parseWaveManifest(source: string): WaveManifest {
     baseCommit: typeof obj.base_commit === 'string' ? obj.base_commit : '',
     maxParallel: typeof obj.max_parallel === 'number' && obj.max_parallel > 0 ? obj.max_parallel : 1,
     tasks: toStrArray(obj.tasks),
+    // v0.7 §49：taskId → Executor Profile（旧 manifest 无此字段 → 不设置）
+    ...(typeof obj.executors === 'object' && obj.executors !== null && !Array.isArray(obj.executors)
+      ? { executors: Object.fromEntries(
+          Object.entries(obj.executors as Record<string, unknown>).filter(
+            ([k, v]) => typeof k === 'string' && typeof v === 'string',
+          ),
+        ) as Record<string, string> }
+      : {}),
     ...(typeof obj.started_at === 'string' ? { startedAt: obj.started_at } : {}),
     ...(typeof obj.finished_at === 'string' ? { finishedAt: obj.finished_at } : {}),
     integrationOrder: toStrArray(obj.integration_order),

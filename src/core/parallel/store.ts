@@ -33,6 +33,8 @@ export async function saveWaveStart(options: SaveWaveStartOptions): Promise<Wave
     baseCommit: options.baseCommit,
     maxParallel: options.plan.maxParallel,
     tasks: [...options.plan.tasks],
+    // v0.7 §49：taskId → Executor Profile（wave evidence；不复制完整 Executor Plan）
+    executors: { ...options.plan.executors },
     startedAt: options.now?.toISOString() ?? new Date().toISOString(),
     // integration order = Task Graph 声明顺序（wave.tasks 本身就是声明顺序）
     integrationOrder: [...options.plan.tasks],

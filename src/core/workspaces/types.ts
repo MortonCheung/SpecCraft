@@ -100,6 +100,8 @@ export interface WaveManifest {
   maxParallel: number;
   /** 本 wave 选中 Task（graph 声明顺序） */
   tasks: string[];
+  /** v0.7：taskId → Executor Profile（wave evidence；不复制完整 Executor Plan，ADR 0008 §35） */
+  executors?: Record<string, string>;
   startedAt?: string;
   finishedAt?: string;
   /** 确定性 integration 顺序（graph 声明顺序） */

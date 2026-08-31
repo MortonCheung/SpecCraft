@@ -1705,6 +1705,7 @@ export async function cmdExecute(
       maxParallel,
       freshSession: opts.freshSession === true,
       ...(adapterConfig ? { adapterConfig } : {}),
+      ...(executorResolver ? { executorResolver } : {}),
       ...(config.hooks ? { hooks: config.hooks } : {}),
     });
 

@@ -57,6 +57,7 @@ import { planWave } from './planner.js';
 import { saveWaveStart, saveWaveFinish } from './store.js';
 import { acquireRunLock } from './lock.js';
 import type { WavePlan } from './types.js';
+import type { ExecutorResolver } from '../executors/resolver.js';
 
 export interface ExecuteParallelOptions {
   speccraftDir: string;
@@ -68,6 +69,8 @@ export interface ExecuteParallelOptions {
   maxParallel: number;
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
   freshSession?: boolean;
+  /** v0.7：frozen plan.yaml → taskId → Executor（§38）。缺省 → legacy single-executor fallback（§39） */
+  executorResolver?: ExecutorResolver;
   /** 项目级 hooks（§17：parallel route 复用既有 4 个 dispatch/verify 事件） */
   hooks?: HookConfig;
 }
@@ -171,8 +174,13 @@ export async function executeParallelTaskGraph(options: ExecuteParallelOptions):
         });
       }
 
-      // plan wave（deterministic：声明顺序 + scope 保守冲突 + maxParallel）
-      const plan = planWave({ graph, statuses, maxParallel: options.maxParallel });
+      // plan wave（deterministic：声明顺序 + scope 保守冲突 + maxParallel + Executor Profile 容量，§43/§44）
+      const plan = planWave({
+        graph,
+        statuses,
+        maxParallel: options.maxParallel,
+        executorAssignments: executorAssignments,
+      });
       if (plan.tasks.length === 0) {
         if (allCompleted(graph, statuses)) break;
         return finalize(options, graph, manifests, {
@@ -315,8 +323,9 @@ interface TaskWorkspaceContext {
 
 /** v0.7 Workspace 创建时的 Executor Assignment snapshot（ADR 0008 §21；从 frozen plan.yaml 读取） */
 interface ExecutorAssignmentSnapshot {
-  executor?: string;
-  adapter?: string;
+  executor: string;
+  adapter: string;
+  maxConcurrency?: number;
 }
 
 /**
@@ -331,7 +340,11 @@ async function loadExecutorAssignments(
   const map = new Map<string, ExecutorAssignmentSnapshot>();
   if (plan) {
     for (const a of plan.assignments) {
-      map.set(a.taskId, { executor: a.executor, adapter: a.adapter });
+      map.set(a.taskId, {
+        executor: a.executor,
+        adapter: a.adapter,
+        ...(a.maxConcurrency !== undefined ? { maxConcurrency: a.maxConcurrency } : {}),
+      });
     }
   }
   return map;
@@ -406,6 +419,18 @@ async function executeIsolatedTask(
   const { speccraftDir, runId, projectRoot } = options;
   const taskId = ctx.taskId;
   const task = graph.tasks.find((t) => t.id === taskId)!;
+
+  // v0.7：per-task Executor 解析（ADR 0008 §38）。无 resolver → legacy single-executor fallback（§39）。
+  let adapter = options.adapter;
+  let adapterConfig = options.adapterConfig;
+  let executorProfile = assignment?.executor;
+  if (options.executorResolver) {
+    const r = options.executorResolver.resolve(taskId);
+    adapter = r.adapter;
+    adapterConfig = r.adapterConfig;
+    executorProfile = r.executorId;
+  }
+
   const manifest0 = await readWorkspace(speccraftDir, runId, taskId, ctx.attempt);
   const ws = manifest0 ?? (await readLatestWorkspace(speccraftDir, runId, taskId))!;
 
@@ -434,8 +459,8 @@ async function executeIsolatedTask(
       SPECCRAFT_PROJECT_ROOT: options.projectRoot,
       SPECCRAFT_DIR: speccraftDir,
       SPECCRAFT_STAGE: 'implementation',
-      SPECCRAFT_ADAPTER: options.adapter.id,
-      ...(assignment?.executor ? { SPECCRAFT_EXECUTOR_PROFILE: assignment.executor } : {}),
+      SPECCRAFT_ADAPTER: adapter.id,
+      ...(executorProfile ? { SPECCRAFT_EXECUTOR_PROFILE: executorProfile } : {}),
       SPECCRAFT_TASK_ID: taskId,
       SPECCRAFT_WORKSPACE_ROOT: ctx.workspaceRoot,
       SPECCRAFT_WORKSPACE_ATTEMPT: String(ctx.attempt),
@@ -463,20 +488,20 @@ async function executeIsolatedTask(
       return fail('hook', `before_dispatch hook 失败（task ${taskId}）`);
     }
 
-    // dispatch（isolated：projectRoot = workspaceRoot）
+    // dispatch（isolated：projectRoot = workspaceRoot；adapter 来自 per-task Executor 解析）
     const d = await dispatchTask({
       speccraftDir,
       projectRoot: ctx.workspaceRoot,
       runId,
       taskId,
-      adapter: options.adapter,
+      adapter,
       runContext: options.runContext,
       executionGuard: options.executionGuard,
       freshSession: options.freshSession === true,
-      ...(options.adapterConfig ? { adapterConfig: options.adapterConfig } : {}),
+      ...(adapterConfig ? { adapterConfig } : {}),
       workspaceRoot: ctx.workspaceRoot,
       workspaceAttempt: ctx.attempt,
-      ...(assignment?.executor ? { executorProfile: assignment.executor } : {}),
+      ...(executorProfile ? { executorProfile } : {}),
     });
     if (!d.success) {
       return fail('dispatch', `dispatch FAIL（attempt ${d.attempt}）`);
