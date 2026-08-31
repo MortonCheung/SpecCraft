@@ -49,9 +49,16 @@ export const DEFAULT_STAGE_IDS = [
 
 export type StageId = (typeof DEFAULT_STAGE_IDS)[number] | (string & {});
 
-/** 阶段门禁（第一版只支持 all_required_completed） */
+/**
+ * 阶段门禁类型（见 ADR 0002 §7、§9、§14）
+ * - all_required_completed：requires 中所有阶段 status === completed
+ * - owner_approval：requires 中所有阶段 status === approved（Owner 硬门禁）
+ */
+export type GateType = 'all_required_completed' | 'owner_approval';
+
+/** 阶段门禁 */
 export interface StageGate {
-  type: 'all_required_completed';
+  type: GateType;
 }
 
 /** 声明式 Workflow 中的单个阶段（见 ADR 0002 §7） */

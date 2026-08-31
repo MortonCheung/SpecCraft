@@ -1,0 +1,106 @@
+name: default
+version: "0.1.0"
+
+# SpecCraft 默认 Workflow（声明式，见 ADR 0002 §7）
+# 16 阶段；gate.type 取值：all_required_completed | owner_approval
+
+stages:
+  - id: idea
+    requires: []
+    produces: [idea]
+    skill: discovery
+    template: idea
+    gate: { type: all_required_completed }
+
+  - id: feasibility
+    requires: [idea]
+    produces: [feasibility]
+    template: feasibility
+    gate: { type: all_required_completed }
+
+  - id: discovery
+    requires: [feasibility]
+    produces: [discovery]
+    skill: discovery
+    template: discovery
+    gate: { type: all_required_completed }
+
+  - id: requirement
+    requires: [discovery]
+    produces: [requirements]
+    template: requirements
+    gate: { type: all_required_completed }
+
+  - id: concept
+    requires: [requirement]
+    produces: [concept]
+    template: concept
+    gate: { type: all_required_completed }
+
+  - id: research
+    requires: [concept]
+    produces: [research]
+    skill: research
+    template: research
+    gate: { type: all_required_completed }
+
+  - id: design
+    requires: [requirement, research]
+    produces: [design]
+    skill: design
+    template: design
+    gate: { type: all_required_completed }
+
+  - id: owner-approval
+    requires: [design]
+    produces: []
+    gate: { type: owner_approval }
+
+  - id: build-brief
+    requires: [owner-approval]
+    produces: [build-brief]
+    skill: build-brief
+    template: build-brief
+    gate: { type: all_required_completed }
+
+  - id: site-survey
+    requires: [build-brief]
+    produces: [site-survey]
+    skill: site-survey
+    template: site-survey
+    gate: { type: all_required_completed }
+
+  - id: execution-manual
+    requires: [build-brief, site-survey]
+    produces: [execution-manual]
+    skill: execution-manual
+    template: execution-manual
+    gate: { type: all_required_completed }
+
+  - id: ready-to-implement
+    requires: [execution-manual]
+    produces: []
+    gate: { type: all_required_completed }
+
+  - id: implementation
+    requires: [ready-to-implement]
+    produces: []
+    gate: { type: all_required_completed }
+
+  - id: verification
+    requires: [implementation]
+    produces: [verification]
+    skill: verification
+    template: verification
+    gate: { type: all_required_completed }
+
+  - id: owner-acceptance
+    requires: [verification]
+    produces: []
+    gate: { type: owner_approval }
+
+  - id: handoff
+    requires: [owner-acceptance]
+    produces: [handoff]
+    template: handoff
+    gate: { type: all_required_completed }
