@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { CliExecutionAdapter } from '../execution/adapters/types.js';
 import { dispatchOnce } from '../dispatch/orchestrator.js';
 import { findLatestSessionForTask, listDispatchAttemptsForTask } from '../dispatch/store.js';
+import { readExecutorPlanOrNull } from '../executors/store.js';
 import { readTaskGraph } from './store.js';
 import { readTaskManifest, writeTaskManifest, taskDir } from './store.js';
 import { generateTaskPackage } from './package.js';
@@ -34,6 +35,11 @@ export interface DispatchTaskOptions {
   workspaceRoot?: string;
   /** Workspace Attempt 序号（v0.6 parallel route）；用于 session isolation 与 evidence */
   workspaceAttempt?: number;
+  /**
+   * Executor Profile ID（v0.7；ADR 0008 §21）。
+   * 未提供时从 frozen plan.yaml 读取 task assignment 兜底（plan 不存在则 undefined = v0.6 兼容）。
+   */
+  executorProfile?: string;
 }
 
 export interface DispatchTaskResult {
@@ -70,7 +76,15 @@ export async function dispatchTask(options: DispatchTaskOptions): Promise<Dispat
   const promptFile = path.join(taskDir(speccraftDir, runId, taskId), 'prompt.md');
   const prompt = await readFile(promptFile, 'utf8');
 
-  // session isolation：run + task + adapter（v0.6 parallel：+ workspaceAttempt）
+  // Executor Profile（v0.7）：显式传入优先；否则从 frozen plan.yaml 读取 task assignment（ADR 0008 §21）
+  let executorProfile = options.executorProfile;
+  if (executorProfile === undefined) {
+    const plan = await readExecutorPlanOrNull(speccraftDir, runId);
+    const assignment = plan?.assignments.find((a) => a.taskId === taskId);
+    if (assignment) executorProfile = assignment.executor;
+  }
+
+  // session isolation：run + task + adapter（v0.6 parallel：+ workspaceAttempt；v0.7：+ executorProfile）
   let sessionId: string | undefined;
   if (!options.freshSession) {
     sessionId =
@@ -80,6 +94,7 @@ export async function dispatchTask(options: DispatchTaskOptions): Promise<Dispat
         taskId,
         options.adapter.id,
         options.workspaceAttempt,
+        executorProfile,
       )) ?? undefined;
   }
 
@@ -99,6 +114,7 @@ export async function dispatchTask(options: DispatchTaskOptions): Promise<Dispat
     ...(options.adapterConfig?.model ? { model: options.adapterConfig.model } : {}),
     ...(options.adapterConfig ? { adapterConfig: options.adapterConfig } : {}),
     taskId,
+    ...(executorProfile ? { executorProfile } : {}),
     ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
     ...(options.workspaceAttempt !== undefined ? { workspaceAttempt: options.workspaceAttempt } : {}),
   });

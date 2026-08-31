@@ -22,6 +22,8 @@ export interface DispatchAttemptManifest {
   session_id?: string;
   /** Task ID（v0.5 Task dispatch 必有；legacy dispatch 无） */
   task_id?: string;
+  /** Executor Profile ID（v0.7 Task dispatch 必有；legacy dispatch 无；ADR 0008 §21） */
+  executor_profile?: string;
   /** Workspace Attempt 序号（v0.6 parallel route 必有；sequential/legacy 无） */
   workspace_attempt?: number;
   /** 隔离 worktree 绝对路径（v0.6 parallel route 必有） */

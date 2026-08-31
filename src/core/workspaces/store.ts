@@ -49,6 +49,8 @@ export function stringifyWorkspaceManifest(manifest: WorkspaceManifest): string 
       },
       ...(manifest.taskCommit ? { task_commit: manifest.taskCommit } : {}),
       ...(manifest.integrationCommit ? { integration_commit: manifest.integrationCommit } : {}),
+      ...(manifest.executorProfile ? { executor_profile: manifest.executorProfile } : {}),
+      ...(manifest.adapter ? { adapter: manifest.adapter } : {}),
       ...(manifest.failurePhase ? { failure_phase: manifest.failurePhase } : {}),
       ...(manifest.conflictingPaths?.length ? { conflicting_paths: manifest.conflictingPaths } : {}),
       ...(manifest.lastError ? { last_error: manifest.lastError } : {}),
@@ -104,6 +106,10 @@ export function parseWorkspaceManifest(source: string): WorkspaceManifest {
     ...(typeof obj.integration_commit === 'string' && obj.integration_commit
       ? { integrationCommit: obj.integration_commit }
       : {}),
+    ...(typeof obj.executor_profile === 'string' && obj.executor_profile
+      ? { executorProfile: obj.executor_profile }
+      : {}),
+    ...(typeof obj.adapter === 'string' && obj.adapter ? { adapter: obj.adapter } : {}),
     ...(typeof obj.failure_phase === 'string' && obj.failure_phase
       ? { failurePhase: obj.failure_phase }
       : {}),

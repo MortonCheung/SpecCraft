@@ -32,6 +32,8 @@ export interface DispatchOnceOptions {
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
   /** Task ID（v0.5 Task dispatch 必填；legacy 省略） */
   taskId?: string;
+  /** Executor Profile ID（v0.7 Task dispatch；ADR 0008 §21，写入 evidence） */
+  executorProfile?: string;
   /** 隔离 worktree 绝对路径（v0.6 parallel route；省略则用 projectRoot） */
   workspaceRoot?: string;
   /** Workspace Attempt 序号（v0.6 parallel route） */
@@ -98,6 +100,7 @@ export async function dispatchOnce(options: DispatchOnceOptions): Promise<Dispat
     timed_out: proc.timedOut,
     ...(normalized.sessionId ? { session_id: normalized.sessionId } : {}),
     ...(options.taskId ? { task_id: options.taskId } : {}),
+    ...(options.executorProfile ? { executor_profile: options.executorProfile } : {}),
     ...(options.workspaceAttempt !== undefined ? { workspace_attempt: options.workspaceAttempt } : {}),
     ...(options.workspaceRoot ? { workspace_root: options.workspaceRoot } : {}),
     command: [invocation.command, ...invocation.args],

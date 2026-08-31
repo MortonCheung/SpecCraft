@@ -123,6 +123,7 @@ export async function readDispatchAttempt(
     timed_out: parsed.timed_out === true,
     ...(typeof parsed.session_id === 'string' ? { session_id: parsed.session_id } : {}),
     ...(typeof parsed.task_id === 'string' ? { task_id: parsed.task_id } : {}),
+    ...(typeof parsed.executor_profile === 'string' ? { executor_profile: parsed.executor_profile } : {}),
     ...(typeof parsed.workspace_attempt === 'number' ? { workspace_attempt: parsed.workspace_attempt } : {}),
     ...(typeof parsed.workspace_root === 'string' ? { workspace_root: parsed.workspace_root } : {}),
     ...(Array.isArray(parsed.command) ? { command: parsed.command.map(String) } : {}),
@@ -151,6 +152,11 @@ export async function readLatestDispatchAttempt(
  * v0.6 parallel route：可额外按 workspaceAttempt 过滤（ADR 0007 §7.5、§11.4）。
  *   - 提供 workspaceAttempt：只匹配同一 Workspace Attempt 的 session；
  *   - 未提供（sequential/legacy）：兼容旧 evidence（无 workspace_attempt 字段）。
+ *
+ * v0.7（ADR 0008 §22）：可额外按 executorProfile 过滤（Session Ownership invariant）。
+ *   - 提供 executorProfile：只匹配同一 Executor Profile 的 session；
+ *   - 未提供（向后兼容调用）：不按 profile 过滤（保持 v0.6 语义）。
+ *   旧 evidence（无 executor_profile 字段）不会匹配任何显式 profile → 返回 null → fresh session。
  */
 export async function findLatestSessionForTask(
   speccraftDir: string,
@@ -158,6 +164,7 @@ export async function findLatestSessionForTask(
   taskId: string,
   adapterId: string,
   workspaceAttempt?: number,
+  executorProfile?: string,
 ): Promise<string | null> {
   const attempts = await listDispatchAttempts(speccraftDir, runId);
   for (let i = attempts.length - 1; i >= 0; i--) {
@@ -165,6 +172,9 @@ export async function findLatestSessionForTask(
     if (!m || m.task_id !== taskId || m.adapter !== adapterId || !m.session_id) continue;
     if (workspaceAttempt !== undefined) {
       if (m.workspace_attempt !== workspaceAttempt) continue;
+    }
+    if (executorProfile !== undefined) {
+      if (m.executor_profile !== executorProfile) continue;
     }
     return m.session_id;
   }

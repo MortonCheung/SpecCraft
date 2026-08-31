@@ -53,6 +53,7 @@ export interface HookEnvironment {
   SPECCRAFT_VERIFICATION_ATTEMPT?: string;
   SPECCRAFT_ACCEPTANCE_ATTEMPT?: string;
   SPECCRAFT_ADAPTER?: string;
+  SPECCRAFT_EXECUTOR_PROFILE?: string;
   SPECCRAFT_TASK_ID?: string;
   /** v0.6 parallel route：隔离 worktree 根目录 */
   SPECCRAFT_WORKSPACE_ROOT?: string;

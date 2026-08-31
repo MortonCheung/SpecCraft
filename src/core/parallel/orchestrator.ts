@@ -28,6 +28,7 @@ import { refreshStates, hasFailedTask, allCompleted } from '../tasks/dependency.
 import { dispatchTask } from '../tasks/dispatch.js';
 import { verifyTask } from '../tasks/verification/lifecycle.js';
 import { listTaskVerificationAttempts } from '../tasks/verification/lifecycle.js';
+import { readExecutorPlanOrNull } from '../executors/store.js';
 import { implementStart, implementFinish } from '../execution/lifecycle.js';
 import { runDir, readRun } from '../execution/store.js';
 
@@ -154,6 +155,9 @@ export async function executeParallelTaskGraph(options: ExecuteParallelOptions):
     let totalParallelTasks = 0;
     let waveCount = 0;
 
+    // v0.7：frozen plan.yaml → taskId → Executor Assignment（一次读取，全程复用；ADR 0008 §21）
+    const executorAssignments = await loadExecutorAssignments(speccraftDir, runId);
+
     while (true) {
       if (hasFailedTask(statuses)) {
         return finalize(options, graph, manifests, {
@@ -206,13 +210,20 @@ export async function executeParallelTaskGraph(options: ExecuteParallelOptions):
       // create all worktrees（wave 开始时逐个创建，串行保证分支唯一性）
       const contexts: TaskWorkspaceContext[] = [];
       for (const taskId of plan.tasks) {
-        const ctx = await prepareWorkspace({ projectRoot, speccraftDir, runId, taskId, baseCommit: canonicalHead });
+        const ctx = await prepareWorkspace({
+          projectRoot,
+          speccraftDir,
+          runId,
+          taskId,
+          baseCommit: canonicalHead,
+          assignment: executorAssignments.get(taskId),
+        });
         contexts.push(ctx);
       }
 
       // parallel dispatch / audit / verify / commit（真并行，Promise.allSettled，§14.5）
       const settled = await Promise.allSettled(
-        contexts.map((ctx) => executeIsolatedTask(options, graph, ctx, waveManifest.wave)),
+        contexts.map((ctx) => executeIsolatedTask(options, graph, ctx, waveManifest.wave, executorAssignments.get(ctx.taskId))),
       );
       const outcomes: IsolatedTaskOutcome[] = settled.map((s, i) => {
         if (s.status === 'fulfilled') return s.value;
@@ -302,14 +313,40 @@ interface TaskWorkspaceContext {
   reused: boolean;
 }
 
+/** v0.7 Workspace 创建时的 Executor Assignment snapshot（ADR 0008 §21；从 frozen plan.yaml 读取） */
+interface ExecutorAssignmentSnapshot {
+  executor?: string;
+  adapter?: string;
+}
+
+/**
+ * 读取 frozen plan.yaml 构建 taskId → assignment snapshot。
+ * plan 不存在（legacy run）→ 空 Map（v0.6 兼容：workspace 无 snapshot、dispatch 无 executor_profile）。
+ */
+async function loadExecutorAssignments(
+  speccraftDir: string,
+  runId: string,
+): Promise<Map<string, ExecutorAssignmentSnapshot>> {
+  const plan = await readExecutorPlanOrNull(speccraftDir, runId);
+  const map = new Map<string, ExecutorAssignmentSnapshot>();
+  if (plan) {
+    for (const a of plan.assignments) {
+      map.set(a.taskId, { executor: a.executor, adapter: a.adapter });
+    }
+  }
+  return map;
+}
+
 async function prepareWorkspace(input: {
   projectRoot: string;
   speccraftDir: string;
   runId: string;
   taskId: string;
   baseCommit: string;
+  /** v0.7 Executor Assignment snapshot（写进 workspace manifest） */
+  assignment?: ExecutorAssignmentSnapshot;
 }): Promise<TaskWorkspaceContext> {
-  const { projectRoot, speccraftDir, runId, taskId, baseCommit } = input;
+  const { projectRoot, speccraftDir, runId, taskId, baseCommit, assignment } = input;
 
   // 复用规则（§7.4）：pre-integration 失败 → 复用 attempt；integrated/conflict → 新 attempt
   const reusable = await findReusableWorkspace(speccraftDir, runId, taskId);
@@ -346,6 +383,9 @@ async function prepareWorkspace(input: {
     verificationAttempts: [],
     changedPaths: [],
     scopeAudit: { declared: [], actual: [], passed: false, violations: [] },
+    // v0.7 Assignment snapshot（ADR 0008 §21）：workspace 创建时的 Executor 归属证据
+    ...(assignment?.executor ? { executorProfile: assignment.executor } : {}),
+    ...(assignment?.adapter ? { adapter: assignment.adapter } : {}),
   };
   await writeWorkspace(speccraftDir, runId, taskId, manifest);
   return { taskId, attempt, workspaceRoot, branch, baseCommit, reused: false };
@@ -360,6 +400,8 @@ async function executeIsolatedTask(
   graph: TaskGraph,
   ctx: TaskWorkspaceContext,
   wave: number,
+  /** v0.7 Executor Assignment snapshot（frozen plan.yaml 读取，ADR 0008 §21） */
+  assignment?: ExecutorAssignmentSnapshot,
 ): Promise<IsolatedTaskOutcome> {
   const { speccraftDir, runId, projectRoot } = options;
   const taskId = ctx.taskId;
@@ -393,6 +435,7 @@ async function executeIsolatedTask(
       SPECCRAFT_DIR: speccraftDir,
       SPECCRAFT_STAGE: 'implementation',
       SPECCRAFT_ADAPTER: options.adapter.id,
+      ...(assignment?.executor ? { SPECCRAFT_EXECUTOR_PROFILE: assignment.executor } : {}),
       SPECCRAFT_TASK_ID: taskId,
       SPECCRAFT_WORKSPACE_ROOT: ctx.workspaceRoot,
       SPECCRAFT_WORKSPACE_ATTEMPT: String(ctx.attempt),
@@ -433,6 +476,7 @@ async function executeIsolatedTask(
       ...(options.adapterConfig ? { adapterConfig: options.adapterConfig } : {}),
       workspaceRoot: ctx.workspaceRoot,
       workspaceAttempt: ctx.attempt,
+      ...(assignment?.executor ? { executorProfile: assignment.executor } : {}),
     });
     if (!d.success) {
       return fail('dispatch', `dispatch FAIL（attempt ${d.attempt}）`);

@@ -69,6 +69,10 @@ export interface WorkspaceManifest {
   verificationAttempts: number[];
   changedPaths: string[];
   scopeAudit: ScopeAuditRecord;
+  /** Executor Profile ID（v0.7 Workspace 创建时的 Assignment snapshot；ADR 0008 §21） */
+  executorProfile?: string;
+  /** Adapter ID（v0.7 Assignment snapshot，与 executorProfile 对应） */
+  adapter?: string;
   /** Runtime 生成的 task commit SHA */
   taskCommit?: string;
   /** canonical 上 cherry-pick 后的 integration commit SHA */
