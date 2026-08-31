@@ -98,6 +98,12 @@ export async function compileHandoffPackage(
     files['task-history.md'] = taskHistory;
   }
 
+  // Workspace History（v0.6 §21：parallel route 时确定性生成，不调 AI）
+  const workspaceHistory = await compileWorkspaceHistory(speccraftDir, run.id);
+  if (workspaceHistory) {
+    files['workspace-history.md'] = workspaceHistory;
+  }
+
   const dir = handoffDir(speccraftDir, handoffId);
   await mkdir(dir, { recursive: true });
   const written: string[] = [];
@@ -109,6 +115,69 @@ export async function compileHandoffPackage(
 }
 
 export type { HandoffCompileInput };
+
+/** 确定性生成 Workspace History（parallel route 有 waves/workspace 时）；否则返回 null */
+async function compileWorkspaceHistory(speccraftDir: string, runId: string): Promise<string | null> {
+  const { readTaskGraphOrNull } = await import('../tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) return null;
+
+  const { listWaves, readWaveManifest } = await import('../workspaces/store.js');
+  const waves = await listWaves(speccraftDir, runId);
+  const { readWorkspaceDetail } = await import('../workspaces/diagnostics.js');
+
+  // 无任何 wave / workspace evidence → sequential route，不生成
+  let hasWorkspace = false;
+  for (const t of graph.tasks) {
+    if ((await readWorkspaceDetail(speccraftDir, runId, t.id)).length > 0) {
+      hasWorkspace = true;
+      break;
+    }
+  }
+  if (waves.length === 0 && !hasWorkspace) return null;
+
+  const lines: string[] = [
+    '# Workspace History',
+    '',
+    `Run: ${runId}`,
+    `Execution Mode: parallel`,
+    '',
+    '## Waves',
+    '',
+  ];
+  for (const wave of waves) {
+    const wm = await readWaveManifest(speccraftDir, runId, wave);
+    if (!wm) continue;
+    lines.push(
+      `- wave-${String(wm.wave).padStart(3, '0')}：tasks [${wm.tasks.join(', ')}]，max parallel ${wm.maxParallel}，base ${wm.baseCommit.slice(0, 10)}`,
+    );
+    for (const r of wm.results) lines.push(`  - ${r.taskId}: ${r.result}`);
+  }
+  if (waves.length === 0) lines.push('- （无）');
+
+  lines.push('');
+  lines.push('## Task Workspaces');
+  lines.push('');
+  for (const t of graph.tasks) {
+    const details = await readWorkspaceDetail(speccraftDir, runId, t.id);
+    if (details.length === 0) continue;
+    lines.push(`- ${t.id}:`);
+    for (const m of details) {
+      lines.push(`  - attempt ${m.attempt}（${m.status}）`);
+      lines.push(`    - branch: ${m.branch}`);
+      lines.push(`    - base commit: ${m.baseCommit}`);
+      lines.push(`    - task commit: ${m.taskCommit ?? '（无）'}`);
+      lines.push(`    - integration commit: ${m.integrationCommit ?? '（无）'}`);
+      lines.push(`    - scope audit: ${m.scopeAudit.passed ? 'PASS' : 'FAIL'}${m.scopeAudit.violations.length > 0 ? `（violations: ${m.scopeAudit.violations.join(', ')}）` : ''}`);
+      lines.push(`    - dispatch attempts: [${m.dispatchAttempts.join(', ') || '无'}]`);
+      lines.push(`    - verification attempts: [${m.verificationAttempts.join(', ') || '无'}]`);
+      if (m.failurePhase) lines.push(`    - failure phase: ${m.failurePhase}`);
+      if (m.conflictingPaths?.length) lines.push(`    - conflicting paths: ${m.conflictingPaths.join(', ')}`);
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
+}
 
 /** 确定性生成 Task History（有 Task Graph 时）；无则返回 null */
 async function compileTaskHistory(speccraftDir: string, runId: string): Promise<string | null> {
