@@ -4,8 +4,10 @@ import yaml from 'js-yaml';
 import { loadWorkflowFile } from './workflow/loader.js';
 import { readState, WORKFLOW_FILE, PROJECT_FILE } from './state/store.js';
 import { parseHookConfig } from './hooks/config.js';
+import { parseExecutorsSection } from './executors/config.js';
 import type { HookConfig } from './hooks/types.js';
 import type { Workflow, State } from './types.js';
+import type { ExecutorProfileConfig } from './executors/types.js';
 
 export interface ProjectContext {
   speccraftDir: string;
@@ -30,12 +32,16 @@ export interface ProjectAdapterConfig {
   sandbox?: string;
 }
 
-/** execution 配置（ADR 0005 §2） */
+/** execution 配置（ADR 0005 §2；ADR 0008 §7 executors 新增） */
 export interface ExecutionConfig {
   /** 默认 adapter id（缺省 manual） */
   defaultAdapter: string;
   /** 各 adapter 的可选覆盖 */
   adapters: Record<string, ProjectAdapterConfig>;
+  /** 默认 Executor Profile id（ADR 0008；缺省时 legacy-default） */
+  defaultExecutor?: string;
+  /** 各 Executor Profile（ADR 0008 §7） */
+  executors: Record<string, ExecutorProfileConfig>;
 }
 
 /** .speccraft/project.yaml 的结构（兼容旧文件：verification / execution / hooks 可选） */
@@ -132,7 +138,14 @@ export function parseProjectConfig(source: string): ProjectConfig {
       }
     }
 
-    config.execution = { defaultAdapter, adapters };
+    // ADR 0008 §7：execution.default_executor + execution.executors（可选，向后兼容）
+    const executorsSection = parseExecutorsSection(eo);
+    config.execution = {
+      defaultAdapter,
+      adapters,
+      ...(executorsSection?.defaultExecutor ? { defaultExecutor: executorsSection.defaultExecutor } : {}),
+      executors: executorsSection?.executors ?? {},
+    };
   }
 
   if (obj.hooks !== undefined && obj.hooks !== null) {
