@@ -15,3 +15,6 @@ export const defaultWorkflowPath = path.join(
 
 /** Artifact 模板目录（templates/） */
 export const templatesDir = path.join(packageRoot, 'templates');
+
+/** 内置 Skill 目录（skills/） */
+export const skillsDir = path.join(packageRoot, 'skills');

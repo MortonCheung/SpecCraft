@@ -6,6 +6,7 @@ import {
   cmdApprove,
   cmdArtifact,
   cmdValidate,
+  cmdPrepare,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -61,6 +62,7 @@ function usage(): string {
     '  next                            查看下一步阶段 / 待批准阶段',
     '  approve <stage> [--by <who>]    批准指定阶段（Owner 硬门禁）',
     '  artifact <stage>                为指定阶段生成 artifact 并推进',
+    '  prepare [--adapter manual]      编译 Execution Package 并创建 Run',
     '  validate                        校验状态一致性（不跳阶段）',
   ].join('\n');
 }
@@ -95,6 +97,9 @@ async function main(): Promise<number> {
         await cmdArtifact(stage);
         return 0;
       }
+      case 'prepare':
+        await cmdPrepare(args.flags.adapter);
+        return 0;
       case 'validate':
         return await cmdValidate();
       default:

@@ -120,6 +120,21 @@ export async function cmdArtifact(stageId: string): Promise<void> {
   console.log(`阶段 ${stageId} 状态：${state.stages[stageId].status}`);
 }
 
+/** speccraft prepare [--adapter <id>]：编译 Execution Package 并创建 Run */
+export async function cmdPrepare(adapterId: string | undefined): Promise<void> {
+  const { prepareExecution } = await import('../core/execution/prepare.js');
+  const result = await prepareExecution({
+    projectRoot: process.cwd(),
+    ...(adapterId ? { adapterId } : {}),
+  });
+  console.log(`已创建 Execution Run：${result.runId}`);
+  for (const file of result.files) {
+    console.log(`已生成：.speccraft/runs/${result.runId}/${file}`);
+  }
+  console.log('');
+  console.log('下一步：把 agent-prompt.md 交给施工 Agent，然后运行 speccraft implement start');
+}
+
 /** speccraft validate（状态一致性，不跳阶段） */
 export async function cmdValidate(): Promise<number> {
   const { workflow, state } = await loadProject(process.cwd());
