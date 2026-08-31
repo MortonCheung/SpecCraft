@@ -12,3 +12,6 @@ export const defaultWorkflowPath = path.join(
   'schemas',
   'default-workflow.yaml',
 );
+
+/** Artifact 模板目录（templates/） */
+export const templatesDir = path.join(packageRoot, 'templates');
