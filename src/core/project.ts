@@ -3,6 +3,8 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { loadWorkflowFile } from './workflow/loader.js';
 import { readState, WORKFLOW_FILE, PROJECT_FILE } from './state/store.js';
+import { parseHookConfig } from './hooks/config.js';
+import type { HookConfig } from './hooks/types.js';
 import type { Workflow, State } from './types.js';
 
 export interface ProjectContext {
@@ -36,12 +38,13 @@ export interface ExecutionConfig {
   adapters: Record<string, ProjectAdapterConfig>;
 }
 
-/** .speccraft/project.yaml 的结构（兼容旧文件：verification / execution 可选） */
+/** .speccraft/project.yaml 的结构（兼容旧文件：verification / execution / hooks 可选） */
 export interface ProjectConfig {
   name: string;
   createdAt?: string;
   verification?: VerificationConfig;
   execution?: ExecutionConfig;
+  hooks?: HookConfig;
 }
 
 /** 解析 project.yaml 文本（旧文件无 verification 字段时给出安全默认值） */
@@ -130,6 +133,10 @@ export function parseProjectConfig(source: string): ProjectConfig {
     }
 
     config.execution = { defaultAdapter, adapters };
+  }
+
+  if (obj.hooks !== undefined && obj.hooks !== null) {
+    config.hooks = parseHookConfig(obj.hooks);
   }
 
   return config;
