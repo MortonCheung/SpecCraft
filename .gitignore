@@ -1,0 +1,5 @@
+# 第三方开源研究仓库（仅作为研究材料，不得作为 SpecCraft 自身源码提交）
+/references/
+
+# macOS
+.DS_Store
