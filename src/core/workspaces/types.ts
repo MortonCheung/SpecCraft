@@ -75,6 +75,8 @@ export interface WorkspaceManifest {
   integrationCommit?: string;
   /** 失败发生的阶段（dispatch/verify/scope/integration） */
   failurePhase?: string;
+  /** integration_conflict 时记录的冲突路径（ADR 0007 §12.6） */
+  conflictingPaths?: string[];
   lastError?: string;
 }
 
