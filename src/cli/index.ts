@@ -12,6 +12,7 @@ import {
   cmdVerify,
   cmdAccept,
   cmdReject,
+  cmdHandoff,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -130,9 +131,7 @@ async function main(): Promise<number> {
       case 'reject':
         return await cmdReject({ reason: args.flags.reason, file: args.flags.file });
       case 'handoff':
-        // 在 M3.5 实现前给明确提示
-        console.error('错误：handoff 尚未实现。');
-        return 1;
+        return await cmdHandoff();
       case 'validate':
         return await cmdValidate();
       default:

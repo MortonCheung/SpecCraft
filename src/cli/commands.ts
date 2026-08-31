@@ -310,6 +310,37 @@ export async function cmdVerify(projectRoot: string = process.cwd()): Promise<nu
   return result.passed ? 0 : 1;
 }
 
+/** speccraft handoff：生成 Handoff Package（确定性交接，幂等） */
+export async function cmdHandoff(projectRoot: string = process.cwd()): Promise<number> {
+  const { workflow, state, speccraftDir } = await loadProject(projectRoot);
+  const { loadProjectConfig } = await import('../core/project.js');
+  const config = await loadProjectConfig(speccraftDir);
+  const { getActiveRun } = await import('../core/execution/store.js');
+  const run = await getActiveRun(speccraftDir, state.active_run);
+  if (!run) {
+    console.error('错误：没有活跃的 Execution Run，无法 handoff。');
+    return 1;
+  }
+  const { handoff } = await import('../core/handoff/lifecycle.js');
+  const result = await handoff(
+    speccraftDir,
+    projectRoot,
+    config.name || path.basename(projectRoot),
+    workflow,
+    state,
+    run,
+  );
+  const dir = path.join(speccraftDir, 'handoffs', result.handoffId);
+  if (result.reused) {
+    console.log(`Handoff 已存在，复用现有包：${result.handoffId}`);
+  } else {
+    console.log(`已生成 Handoff Package：${result.handoffId}`);
+  }
+  console.log(`路径：${dir}`);
+  console.log('handoff = completed');
+  return 0;
+}
+
 /** speccraft accept [--note <text> | --file <path>] [--by <who>] */
 export async function cmdAccept(
   opts: { note?: string; file?: string; by?: string },
