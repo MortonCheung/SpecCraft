@@ -78,7 +78,15 @@ export function parseTaskGraph(source: string): TaskGraph {
 
   if (!Array.isArray(obj.tasks)) throw new Error('task graph 缺少 tasks 数组');
 
-  const tasks: TaskDefinition[] = obj.tasks.map((raw, i) => {
+  const tasks = parseTaskDefinitions(obj.tasks);
+
+  return { version: 1, runId, source: sourceArtifact, createdAt, tasks };
+}
+
+/** 从 YAML 数组解析 TaskDefinition[]（供 graph.yaml 与 compiler block 复用） */
+export function parseTaskDefinitions(rawTasks: unknown): TaskDefinition[] {
+  if (!Array.isArray(rawTasks)) throw new Error('tasks 必须是数组');
+  return rawTasks.map((raw, i) => {
     if (typeof raw !== 'object' || raw === null) throw new Error(`tasks[${i}] 必须是对象`);
     const t = raw as Record<string, unknown>;
     const id = typeof t.id === 'string' ? t.id.trim() : '';
@@ -109,8 +117,6 @@ export function parseTaskGraph(source: string): TaskGraph {
       verification: { commands, timeoutSeconds },
     };
   });
-
-  return { version: 1, runId, source: sourceArtifact, createdAt, tasks };
 }
 
 /** 写入 graph.yaml */
