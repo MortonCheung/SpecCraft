@@ -484,7 +484,7 @@ export async function cmdAdaptersDoctor(
 
 /** speccraft dispatch [--adapter <id>] [--run <id>] [--fresh-session] */
 export async function cmdDispatch(
-  opts: { adapter?: string; run?: string; freshSession?: boolean },
+  opts: { adapter?: string; run?: string; freshSession?: boolean; task?: string },
   projectRoot: string = process.cwd(),
 ): Promise<number> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
@@ -513,6 +513,56 @@ export async function cmdDispatch(
   }
 
   const adapterConfig = config.execution?.adapters[adapterId];
+
+  // Task dispatch（v0.5）：--task 指定单个 Task
+  if (opts.task) {
+    const { readFile } = await import('node:fs/promises');
+    const { readTaskGraph } = await import('../core/tasks/store.js');
+    const { dispatchTask } = await import('../core/tasks/dispatch.js');
+    const graph = await readTaskGraph(speccraftDir, run.id);
+    const task = graph.tasks.find((t) => t.id === opts.task);
+    if (!task) {
+      console.error(`错误：Task 不存在：${opts.task}`);
+      return 1;
+    }
+    const runContextPath = path.join(speccraftDir, 'runs', run.id, 'context.md');
+    let runContext = '';
+    try {
+      runContext = await readFile(runContextPath, 'utf8');
+    } catch {
+      runContext = '（无 run context）';
+    }
+    const { skillsDir } = await import('../utils/paths.js');
+    let executionGuard = '';
+    try {
+      executionGuard = await readFile(path.join(skillsDir, 'execution-guard', 'SKILL.md'), 'utf8');
+    } catch {
+      executionGuard = '';
+    }
+
+    const result = await dispatchTask({
+      speccraftDir,
+      projectRoot,
+      runId: run.id,
+      taskId: opts.task,
+      adapter,
+      runContext,
+      executionGuard,
+      freshSession: opts.freshSession === true,
+      ...(adapterConfig ? { adapterConfig } : {}),
+    });
+
+    if (!result.success) {
+      console.error(`Task ${opts.task} Dispatch Attempt ${result.attempt} 失败。`);
+      console.error(`task ${opts.task} = failed。修复后：speccraft tasks reopen ${opts.task} 或重新 dispatch --task ${opts.task}`);
+      return 1;
+    }
+    console.log(`Task ${opts.task} Dispatch Attempt ${result.attempt} 成功（adapter ${adapter.id}${result.sessionId ? `，session ${result.sessionId}` : ''}）。`);
+    console.log(`task ${opts.task} = in_progress（等待 Task Verification）。`);
+    console.log(`下一步：speccraft tasks verify ${opts.task}`);
+    return 0;
+  }
+
   const promptFile = path.join(speccraftDir, 'runs', run.id, 'agent-prompt.md');
 
   // before_dispatch hook（blocking）
@@ -857,4 +907,177 @@ async function syncArtifactStatus(
   if (artifact.frontmatter.status === status) return;
   artifact.frontmatter.status = status;
   await writeArtifact(filePath, artifact);
+}
+
+// ---------------------------------------------------------------------------
+// Task Graph CLI（v0.5）
+// ---------------------------------------------------------------------------
+
+/** 取 active run；无则抛错 */
+async function requireActiveRun(projectRoot: string): Promise<{ speccraftDir: string; runId: string }> {
+  const { state, speccraftDir } = await loadProject(projectRoot);
+  if (!state.active_run) throw new Error('没有活跃的 Execution Run，请先 speccraft prepare');
+  return { speccraftDir, runId: state.active_run };
+}
+
+/** speccraft tasks compile：从 execution-manual 编译 Task Graph */
+export async function cmdTasksCompile(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readExecutionManualBody, compileTaskGraph } = await import('../core/tasks/compiler.js');
+  try {
+    const manualBody = await readExecutionManualBody(speccraftDir);
+    const result = await compileTaskGraph({ speccraftDir, runId, manualBody, source: 'execution-manual' });
+    console.log(`已编译 Task Graph：${result.graph.tasks.length} 个 Task`);
+    for (const [id, status] of Object.entries(result.initial)) {
+      console.log(`  ${id}  ${status}`);
+    }
+    return 0;
+  } catch (err) {
+    console.error(`错误：${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
+/** speccraft tasks list */
+export async function cmdTasksList(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraphOrNull } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) {
+    console.log('当前 Run 没有 Task Graph（legacy Run）。');
+    return 0;
+  }
+  const { readAllTaskManifests } = await import('../core/tasks/store.js');
+  const manifests = await readAllTaskManifests(speccraftDir, runId);
+  console.log(`Tasks（${graph.tasks.length}）：`);
+  for (const t of graph.tasks) {
+    const m = manifests.get(t.id);
+    const deps = t.dependsOn.length > 0 ? t.dependsOn.join(',') : '-';
+    const dA = m?.dispatchAttempts.length ?? 0;
+    const vA = m?.verificationAttempts.length ?? 0;
+    console.log(`  ${t.id.padEnd(20)} ${(m?.status ?? '?').padEnd(12)} deps=[${deps}] dispatch=${dA} verify=${vA}`);
+  }
+  return 0;
+}
+
+/** speccraft tasks next */
+export async function cmdTasksNext(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) {
+    console.log('当前 Run 没有 Task Graph（legacy Run）。');
+    return 0;
+  }
+  const manifests = await readAllTaskManifests(speccraftDir, runId);
+  const { refreshStates, firstReadyTask, hasFailedTask, allCompleted, blockedReason } = await import('../core/tasks/dependency.js');
+  const statuses = refreshStates(graph, manifests);
+
+  if (hasFailedTask(statuses)) {
+    const failed = graph.tasks.filter((t) => statuses.get(t.id) === 'failed').map((t) => t.id);
+    console.log(`有 failed Task：${failed.join(', ')}`);
+    console.log('修复后：speccraft tasks reopen <id> 或直接 speccraft dispatch --task <id>');
+    return 1;
+  }
+  if (allCompleted(graph, statuses)) {
+    console.log('Task Graph complete。');
+    console.log('下一步：speccraft execute（聚合 finish）或 speccraft verify');
+    return 0;
+  }
+  const br = blockedReason(graph, statuses);
+  if (br) {
+    console.log(`Task ${br.taskId} 被 failed dependency ${br.failedDep} 阻塞。`);
+    return 1;
+  }
+  const next = firstReadyTask(graph, statuses);
+  if (next) {
+    console.log(`Next task: ${next}`);
+    console.log(`下一步：speccraft dispatch --task ${next}`);
+    return 0;
+  }
+  console.log('无 ready Task（可能全部 pending/blocked）。');
+  return 1;
+}
+
+/** speccraft tasks show <task-id> */
+export async function cmdTasksShow(taskId: string, projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraph } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraph(speccraftDir, runId);
+  const task = graph.tasks.find((t) => t.id === taskId);
+  if (!task) {
+    console.error(`Task 不存在：${taskId}`);
+    return 1;
+  }
+  const { readTaskManifest } = await import('../core/tasks/store.js');
+  const m = await readTaskManifest(speccraftDir, runId, taskId);
+  const { listDispatchAttemptsForTask } = await import('../core/dispatch/store.js');
+  const { listTaskVerificationAttempts } = await import('../core/tasks/verification/lifecycle.js');
+  const dA = await listDispatchAttemptsForTask(speccraftDir, runId, taskId);
+  const vA = await listTaskVerificationAttempts(speccraftDir, runId, taskId);
+
+  console.log(`Task: ${task.id}`);
+  console.log(`  title: ${task.title}`);
+  console.log(`  status: ${m?.status ?? '?'}`);
+  console.log(`  summary: ${task.summary}`);
+  console.log(`  dependencies: ${task.dependsOn.length > 0 ? task.dependsOn.join(', ') : '（无）'}`);
+  console.log(`  scope: ${task.scope.paths.join(', ')}`);
+  console.log(`  verification: ${task.verification.commands.join('; ')}（timeout ${task.verification.timeoutSeconds}s）`);
+  console.log(`  dispatch attempts: [${dA.join(', ')}]`);
+  console.log(`  verification attempts: [${vA.join(', ')}]`);
+  if (m?.latestSessionId) console.log(`  provider session: ${m.latestSessionId}`);
+  if (m?.lastError) console.log(`  last error: ${m.lastError}`);
+  console.log(`  reopened count: ${m?.reopenedCount ?? 0}`);
+  return 0;
+}
+
+/** speccraft tasks verify <task-id> */
+export async function cmdTasksVerify(taskId: string, projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraph } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraph(speccraftDir, runId);
+  const task = graph.tasks.find((t) => t.id === taskId);
+  if (!task) {
+    console.error(`Task 不存在：${taskId}`);
+    return 1;
+  }
+  const { verifyTask } = await import('../core/tasks/verification/lifecycle.js');
+  try {
+    const result = await verifyTask({
+      speccraftDir,
+      projectRoot,
+      runId,
+      taskId,
+      verification: task.verification,
+    });
+    console.log(`Task ${taskId} Verification Attempt ${result.attempt}: ${result.passed ? 'PASS' : 'FAIL'}`);
+    for (const c of result.commands) {
+      console.log(`  ${c.passed ? 'PASS' : 'FAIL'}  ${c.command}`);
+    }
+    if (result.passed) console.log(`task ${taskId} = completed`);
+    else console.log(`task ${taskId} = failed`);
+    return result.passed ? 0 : 1;
+  } catch (err) {
+    console.error(`错误：${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
+/** speccraft tasks reopen <task-id> [--cascade] */
+export async function cmdTasksReopen(
+  taskId: string,
+  cascade: boolean,
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { reopenTask } = await import('../core/tasks/rework.js');
+  try {
+    const result = await reopenTask({ speccraftDir, runId, taskId, cascade });
+    console.log(`已重开：${result.reopened.join(', ')}`);
+    console.log('历史 evidence 保留。');
+    return 0;
+  } catch (err) {
+    console.error(`错误：${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
 }

@@ -16,6 +16,12 @@ import {
   cmdAdaptersList,
   cmdAdaptersDoctor,
   cmdDispatch,
+  cmdTasksCompile,
+  cmdTasksList,
+  cmdTasksNext,
+  cmdTasksShow,
+  cmdTasksVerify,
+  cmdTasksReopen,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -135,7 +141,30 @@ async function main(): Promise<number> {
           adapter: args.flags.adapter,
           run: args.flags.run,
           freshSession: args.flags['fresh-session'] !== undefined,
+          task: args.flags.task,
         });
+      case 'tasks': {
+        const sub = args.positionals[0];
+        if (sub === 'compile') return await cmdTasksCompile();
+        if (sub === 'list') return await cmdTasksList();
+        if (sub === 'next') return await cmdTasksNext();
+        if (sub === 'show') {
+          const id = args.positionals[1];
+          if (!id) throw new Error('tasks show 需要 task id：speccraft tasks show <task-id>');
+          return await cmdTasksShow(id);
+        }
+        if (sub === 'verify') {
+          const id = args.positionals[1];
+          if (!id) throw new Error('tasks verify 需要 task id：speccraft tasks verify <task-id>');
+          return await cmdTasksVerify(id);
+        }
+        if (sub === 'reopen') {
+          const id = args.positionals[1];
+          if (!id) throw new Error('tasks reopen 需要 task id：speccraft tasks reopen <task-id> [--cascade]');
+          return await cmdTasksReopen(id, args.flags.cascade !== undefined);
+        }
+        throw new Error('tasks 需要 compile | list | next | show | verify | reopen 子命令');
+      }
       case 'implement': {
         const sub = args.positionals[0];
         if (sub === 'start') {
