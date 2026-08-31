@@ -135,6 +135,31 @@ export async function cmdPrepare(adapterId: string | undefined): Promise<void> {
   console.log('下一步：把 agent-prompt.md 交给施工 Agent，然后运行 speccraft implement start');
 }
 
+/** speccraft implement start [--run <run-id>] */
+export async function cmdImplementStart(runId: string | undefined): Promise<void> {
+  const { implementStart } = await import('../core/execution/lifecycle.js');
+  const result = await implementStart({
+    projectRoot: process.cwd(),
+    ...(runId ? { runId } : {}),
+  });
+  console.log(`Run ${result.runId} 已开始施工。`);
+  console.log('implementation = in_progress');
+}
+
+/** speccraft implement finish --report <path> */
+export async function cmdImplementFinish(reportPath: string | undefined): Promise<void> {
+  if (!reportPath) {
+    throw new Error('implement finish 需要报告路径：speccraft implement finish --report <path>');
+  }
+  const { implementFinish } = await import('../core/execution/lifecycle.js');
+  const result = await implementFinish({ projectRoot: process.cwd(), reportPath });
+  console.log(`已收录执行报告：.speccraft/runs/${result.runId}/${result.reportFile}`);
+  console.log('implementation = completed');
+  console.log('current_stage = verification');
+  console.log('');
+  console.log('下一步：speccraft verify');
+}
+
 /** speccraft validate（状态一致性，不跳阶段） */
 export async function cmdValidate(): Promise<number> {
   const { workflow, state } = await loadProject(process.cwd());

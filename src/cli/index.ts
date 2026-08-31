@@ -7,6 +7,8 @@ import {
   cmdArtifact,
   cmdValidate,
   cmdPrepare,
+  cmdImplementStart,
+  cmdImplementFinish,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -63,6 +65,8 @@ function usage(): string {
     '  approve <stage> [--by <who>]    批准指定阶段（Owner 硬门禁）',
     '  artifact <stage>                为指定阶段生成 artifact 并推进',
     '  prepare [--adapter manual]      编译 Execution Package 并创建 Run',
+    '  implement start [--run <id>]     显式开始施工（implementation = in_progress）',
+    '  implement finish --report <path> 显式结束施工并提交执行报告',
     '  validate                        校验状态一致性（不跳阶段）',
   ].join('\n');
 }
@@ -100,6 +104,18 @@ async function main(): Promise<number> {
       case 'prepare':
         await cmdPrepare(args.flags.adapter);
         return 0;
+      case 'implement': {
+        const sub = args.positionals[0];
+        if (sub === 'start') {
+          await cmdImplementStart(args.flags.run);
+          return 0;
+        }
+        if (sub === 'finish') {
+          await cmdImplementFinish(args.flags.report);
+          return 0;
+        }
+        throw new Error('implement 需要 start 或 finish 子命令');
+      }
       case 'validate':
         return await cmdValidate();
       default:
