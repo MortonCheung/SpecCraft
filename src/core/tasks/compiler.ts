@@ -12,6 +12,10 @@ import yaml from 'js-yaml';
 import type { TaskGraph } from './types.js';
 import { parseTaskDefinitions, writeTaskGraph, createTaskManifest } from './store.js';
 import type { TaskManifest } from './types.js';
+import type { ProjectConfig } from '../project.js';
+import { buildExecutorsContext } from '../executors/resolver.js';
+import { buildExecutorPlan } from '../executors/plan.js';
+import { writeExecutorPlan, hasExecutionEvidence } from '../executors/store.js';
 
 export interface CompileResult {
   graph: TaskGraph;
@@ -92,6 +96,8 @@ export async function compileTaskGraph(options: {
   manualBody: string;
   source: string;
   now?: Date;
+  /** 提供时构建并持久化 Executor Plan（ADR 0008 §4）；未提供（legacy 测试/工具）跳过 plan */
+  projectConfig?: ProjectConfig;
 }): Promise<CompileResult> {
   const block = extractTaskGraphBlock(options.manualBody);
   if (block === null) {
@@ -100,6 +106,11 @@ export async function compileTaskGraph(options: {
         'legacy 项目可继续使用 speccraft prepare / dispatch；\n' +
         '如需 Task Graph 请在 Execution Manual 补充「Execution Task Graph」段。',
     );
+  }
+
+  // ADR 0008 §20：Run 已有真实执行 evidence 后禁止 rebuild Task Graph / Executor Plan
+  if (await hasExecutionEvidence(options.speccraftDir, options.runId)) {
+    throw new Error('cannot rebuild task/executor plan after execution evidence exists');
   }
 
   // block 内是完整的 version + tasks YAML
@@ -126,6 +137,14 @@ export async function compileTaskGraph(options: {
     validateScopePaths(t.scope.paths);
   }
   validateGraphConstraints(graph);
+
+  // ADR 0008 §4、§16：构建并持久化 Executor Plan（frozen Run evidence）
+  if (options.projectConfig) {
+    const ctx = buildExecutorsContext(options.projectConfig);
+    const adapters = options.projectConfig.execution?.adapters ?? {};
+    const plan = buildExecutorPlan(ctx, adapters, graph, options.now);
+    await writeExecutorPlan(options.speccraftDir, options.runId, plan);
+  }
 
   // 落盘
   await writeTaskGraph(options.speccraftDir, options.runId, graph);

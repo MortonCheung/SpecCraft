@@ -1259,13 +1259,21 @@ async function requireActiveRun(projectRoot: string): Promise<{ speccraftDir: st
   return { speccraftDir, runId: state.active_run };
 }
 
-/** speccraft tasks compile：从 execution-manual 编译 Task Graph */
+/** speccraft tasks compile：从 execution-manual 编译 Task Graph + Executor Plan */
 export async function cmdTasksCompile(projectRoot: string = process.cwd()): Promise<number> {
   const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { loadProjectConfig } = await import('../core/project.js');
+  const projectConfig = await loadProjectConfig(speccraftDir);
   const { readExecutionManualBody, compileTaskGraph } = await import('../core/tasks/compiler.js');
   try {
     const manualBody = await readExecutionManualBody(speccraftDir);
-    const result = await compileTaskGraph({ speccraftDir, runId, manualBody, source: 'execution-manual' });
+    const result = await compileTaskGraph({
+      speccraftDir,
+      runId,
+      manualBody,
+      source: 'execution-manual',
+      projectConfig,
+    });
     console.log(`已编译 Task Graph：${result.graph.tasks.length} 个 Task`);
     for (const [id, status] of Object.entries(result.initial)) {
       console.log(`  ${id}  ${status}`);

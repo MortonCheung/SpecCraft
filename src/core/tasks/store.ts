@@ -17,6 +17,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { runDir } from '../execution/store.js';
 import { isTaskStatus } from './types.js';
+import { isValidExecutorId } from '../executors/resolver.js';
 import type { TaskDefinition, TaskGraph, TaskManifest, TaskStatus } from './types.js';
 
 export const TASKS_DIR = 'tasks';
@@ -49,6 +50,7 @@ export function stringifyTaskGraph(graph: TaskGraph): string {
         id: t.id,
         title: t.title,
         summary: t.summary,
+        ...(t.executor ? { executor: t.executor } : {}),
         depends_on: t.dependsOn,
         scope: { paths: t.scope.paths },
         verification: {
@@ -96,6 +98,19 @@ export function parseTaskDefinitions(rawTasks: unknown): TaskDefinition[] {
     const summary = typeof t.summary === 'string' ? t.summary.trim() : '';
     if (!summary) throw new Error(`task ${id} 缺少 summary`);
 
+    // ADR 0008 §2、§14：executor 只允许显式 profile id（或缺省）；禁止 auto / capabilities / preferred_models
+    let executor: string | undefined;
+    const ex = t.executor ?? t.executor_id;
+    if (ex !== undefined && ex !== null) {
+      if (typeof ex !== 'string' || !ex.trim()) {
+        throw new Error(`task ${id} 的 executor 必须是非空字符串（不允许 capabilities 等 auto-selector）`);
+      }
+      const execId = ex.trim();
+      if (execId === 'auto') throw new Error(`task ${id} 禁止 executor: auto（v0.7 只允许显式 profile id 或缺省）`);
+      if (!isValidExecutorId(execId)) throw new Error(`task ${id} 的 executor id 非法：${execId}`);
+      executor = execId;
+    }
+
     const dependsOn = toStrArray(t.depends_on ?? t.dependsOn, `task ${id} 的 depends_on`);
     const scopeRaw = (t.scope ?? {}) as Record<string, unknown>;
     const paths = toStrArray(scopeRaw.paths, `task ${id} 的 scope.paths`);
@@ -112,6 +127,7 @@ export function parseTaskDefinitions(rawTasks: unknown): TaskDefinition[] {
       id,
       title,
       summary,
+      ...(executor ? { executor } : {}),
       dependsOn,
       scope: { paths },
       verification: { commands, timeoutSeconds },

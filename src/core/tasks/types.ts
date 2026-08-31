@@ -43,6 +43,8 @@ export interface TaskDefinition {
   id: string;
   title: string;
   summary: string;
+  /** 可选：显式 Executor Profile id（ADR 0008 §2；缺省 → default / legacy） */
+  executor?: string;
   dependsOn: string[];
   scope: TaskScope;
   verification: TaskVerification;

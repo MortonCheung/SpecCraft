@@ -18,6 +18,8 @@ import { mergeAdapterConfig } from './config.js';
 export interface ExecutorsContext {
   /** 默认 Executor Profile id（缺省时 legacy-default） */
   defaultExecutor: string;
+  /** 是否显式配置了 default_executor（区分 source: default 与 source: legacy） */
+  hasDefaultExecutor: boolean;
   /** 各 Executor Profile（可能为空） */
   executors: Record<string, ExecutorProfileConfig>;
   /** legacy adapter（execution.default_adapter，缺省 manual） */
@@ -30,9 +32,12 @@ export function buildExecutorsContext(config: ProjectConfig): ExecutorsContext {
   const executors = config.execution?.executors ?? {};
 
   // 无 default_executor 时 → legacy-default（adapter = default_adapter）
-  const defaultExecutor = config.execution?.defaultExecutor ?? LEGACY_EXECUTOR_ID;
+  const hasDefaultExecutor = config.execution?.defaultExecutor !== undefined;
+  const defaultExecutor = hasDefaultExecutor
+    ? (config.execution?.defaultExecutor as string)
+    : LEGACY_EXECUTOR_ID;
 
-  return { defaultExecutor, executors, legacyAdapter: defaultAdapter };
+  return { defaultExecutor, hasDefaultExecutor, executors, legacyAdapter: defaultAdapter };
 }
 
 /** 解析 Executor Profile；未知 id 返回 null（调用方决定报错策略） */
