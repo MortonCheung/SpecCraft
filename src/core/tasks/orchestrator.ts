@@ -165,7 +165,7 @@ function countCompleted(graph: TaskGraph, statuses: Map<string, TaskManifest['st
 }
 
 /** 把 refresh 后的非终态（ready/pending/blocked）写回磁盘，使 dispatch 能识别 ready */
-async function persistRefreshedStates(
+export async function persistRefreshedStates(
   speccraftDir: string,
   runId: string,
   graph: TaskGraph,

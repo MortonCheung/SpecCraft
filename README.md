@@ -14,9 +14,17 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 ## 当前开发阶段
 
-**v0.4 — Agent Adapter & Hook Runtime**
+**v0.5 — Task Graph & Deterministic Task Orchestration**
 
-已实现（v0.1 → v0.4 累计）：
+版本演进：
+
+- v0.1 Workflow（16 阶段声明式）
+- v0.2 Execution + Verification
+- v0.3 Acceptance + Handoff
+- v0.4 Agent Adapters + Hooks
+- v0.5 Task Graph + Deterministic Orchestration
+
+已实现（v0.1 → v0.5 累计）：
 
 - 声明式 16 阶段 Workflow、`.speccraft` 文件优先工作现场（无数据库）；
 - Context Compiler、Execution Run、Verification / Owner Acceptance / Handoff Runtime；
@@ -24,18 +32,20 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
   CLI Adapter，连接用户本机已安装的 CLI Agent；
 - **Dispatch Runtime**：append-only Dispatch Attempt，归一化执行证据；
 - **Hook Runtime**：生命周期 before/after hook（blocking / non-rollback）；
+- **Task Graph Runtime**：Execution Manual → 确定性 Task Graph，Task-aware
+  dispatch / verification / rework / 顺序编排；
 - SpecCraft Core 不依赖任何特定 AI 厂商；Provider-specific 能力以可选
   CLI Adapter 存在。
 
-尚未实现（后续版本）：多 Agent 编排、SaaS 后端、Web 控制台、云同步、
-Provider SDK / API-key 管理。
+尚未实现（后续版本）：多 Agent 并行编排（v0.6 worktree 并行）、SaaS 后端、
+Web 控制台、云同步、Provider SDK / API-key 管理。
 
 ## CLI
 
 ```bash
 speccraft init [projectRoot] [--force]     # 初始化工作现场
 speccraft status                           # 阶段 / Run / Dispatch / Acceptance / Handoff
-speccraft next                             # 下一步引导（含自动施工路线）
+speccraft next                             # 下一步引导（含 Task 级路线）
 speccraft approve <stage> [--by <who>]     # Owner 批准（硬门禁）
 speccraft artifact <stage>                 # 生成阶段 artifact 并推进
 speccraft prepare [--adapter <id>]         # 编译 Execution Package + 创建 Run
@@ -43,14 +53,27 @@ speccraft implement start [--run <id>]     # 显式开始施工（manual 路线�
 speccraft implement finish --report <path> # 显式结束施工（提交报告）
 speccraft adapters list                    # 列出全部 adapter
 speccraft adapters doctor [id]             # 本机 Provider 能力诊断
-speccraft dispatch [--adapter <id>] [--run <id>] [--fresh-session]
+speccraft dispatch [--adapter <id>] [--run <id>] [--fresh-session] [--task <id>]
                                            # 调用本地 CLI Agent 自动施工
+speccraft tasks compile|list|next|show|verify|reopen
+                                           # Task Graph 管理
+speccraft execute [--adapter <id>]         # 确定性顺序执行整个 Task Graph
 speccraft verify                           # 运行项目验证命令（PASS/FAIL）
 speccraft accept [--note|--file] [--by]    # Owner 验收通过
 speccraft reject --reason <text>|--file    # Owner 拒绝（同 Run 返工）
 speccraft handoff                          # 生成 Handoff Package
-speccraft validate                         # 状态/execution/acceptance/dispatch 一致性检查
+speccraft validate                         # 状态/execution/acceptance/dispatch/task 一致性检查
 ```
+
+## Task Graph（v0.5）
+
+一份已批准的 Execution Manual 可声明 `speccraft-task-graph` block，编译为
+确定性的施工 Task，由 Runtime 做依赖管理、Task-aware dispatch、
+Task-level verification、返工与顺序调度。**v0.5 is sequential by design**
+（单写者，不并行）；真正并行 planned for v0.6。
+
+详见 [docs/task-graph.md](docs/task-graph.md) 与
+[docs/task-orchestration.md](docs/task-orchestration.md)。
 
 ## 完整生命周期
 
