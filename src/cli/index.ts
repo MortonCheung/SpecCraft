@@ -9,6 +9,7 @@ import {
   cmdPrepare,
   cmdImplementStart,
   cmdImplementFinish,
+  cmdVerify,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -67,6 +68,7 @@ function usage(): string {
     '  prepare [--adapter manual]      编译 Execution Package 并创建 Run',
     '  implement start [--run <id>]     显式开始施工（implementation = in_progress）',
     '  implement finish --report <path> 显式结束施工并提交执行报告',
+    '  verify                           运行项目验证命令（PASS/FAIL）',
     '  validate                        校验状态一致性（不跳阶段）',
   ].join('\n');
 }
@@ -116,6 +118,8 @@ async function main(): Promise<number> {
         }
         throw new Error('implement 需要 start 或 finish 子命令');
       }
+      case 'verify':
+        return await cmdVerify();
       case 'validate':
         return await cmdValidate();
       default:

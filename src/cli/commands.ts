@@ -160,6 +160,26 @@ export async function cmdImplementFinish(reportPath: string | undefined): Promis
   console.log('下一步：speccraft verify');
 }
 
+/** speccraft verify：运行项目声明的验证命令 */
+export async function cmdVerify(): Promise<number> {
+  const { verifyExecution } = await import('../core/verification/orchestrator.js');
+  const result = await verifyExecution({ projectRoot: process.cwd() });
+
+  console.log(`Run ${result.runId} / Attempt ${result.attempt}`);
+  for (const c of result.commands) {
+    const exit = c.exitCode !== undefined ? `exit ${c.exitCode}` : (c.reason ?? '未知');
+    console.log(`  ${c.passed ? 'PASS' : 'FAIL'}  ${c.command}（${exit}，${c.durationMs}ms，${c.log}）`);
+  }
+  console.log('');
+  if (result.passed) {
+    console.log('全部验证命令通过。verification = completed');
+  } else {
+    console.log('验证未通过。verification = blocked，implementation 已重新打开（同一 Run 返工）。');
+    console.log('修复后重新执行：speccraft implement finish --report <path>');
+  }
+  return result.passed ? 0 : 1;
+}
+
 /** speccraft validate（状态一致性，不跳阶段） */
 export async function cmdValidate(): Promise<number> {
   const { workflow, state } = await loadProject(process.cwd());
