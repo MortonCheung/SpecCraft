@@ -10,6 +10,8 @@ import {
   cmdImplementStart,
   cmdImplementFinish,
   cmdVerify,
+  cmdAccept,
+  cmdReject,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -55,20 +57,23 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function usage(): string {
   return [
-    'SpecCraft v0.1 — Human-Directed AI Workflow System',
+    'SpecCraft v0.3 — Human-Directed AI Workflow System',
     '',
     '用法：speccraft <command> [options]',
     '',
     '命令：',
     '  init [projectRoot] [--force]    初始化 .speccraft 工作现场',
-    '  status                          查看当前阶段与各阶段状态',
-    '  next                            查看下一步阶段 / 待批准阶段',
+    '  status                          查看阶段 / Run / Acceptance / Handoff 状态',
+    '  next                            查看下一步（含 Execution / Acceptance 生命周期）',
     '  approve <stage> [--by <who>]    批准指定阶段（Owner 硬门禁）',
     '  artifact <stage>                为指定阶段生成 artifact 并推进',
     '  prepare [--adapter manual]      编译 Execution Package 并创建 Run',
     '  implement start [--run <id>]     显式开始施工（implementation = in_progress）',
     '  implement finish --report <path> 显式结束施工并提交执行报告',
     '  verify                           运行项目验证命令（PASS/FAIL）',
+    '  accept [--note|--file] [--by]    Owner 验收通过',
+    '  reject --reason <text>|--file    Owner 拒绝（重开 implementation，同 Run 返工）',
+    '  handoff                          生成 Handoff Package（确定性交接）',
     '  validate                        校验状态一致性（不跳阶段）',
   ].join('\n');
 }
@@ -120,6 +125,14 @@ async function main(): Promise<number> {
       }
       case 'verify':
         return await cmdVerify();
+      case 'accept':
+        return await cmdAccept({ note: args.flags.note, file: args.flags.file, by: args.flags.by });
+      case 'reject':
+        return await cmdReject({ reason: args.flags.reason, file: args.flags.file });
+      case 'handoff':
+        // 在 M3.5 实现前给明确提示
+        console.error('错误：handoff 尚未实现。');
+        return 1;
       case 'validate':
         return await cmdValidate();
       default:

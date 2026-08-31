@@ -58,6 +58,15 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
       if (run.reports.length > 0) {
         console.log(`  reports: ${run.reports.length}`);
       }
+      if (run.acceptance.attempt > 0) {
+        console.log(`  acceptance attempt: ${run.acceptance.attempt}（${run.acceptance.status}）`);
+        if (run.acceptance.latestRecord) {
+          console.log(`  latest acceptance: ${run.acceptance.latestRecord}`);
+        }
+      }
+      if (run.handoffId) {
+        console.log(`  handoff: ${run.handoffId}`);
+      }
       console.log('');
     } else {
       console.log(`Active Run: ${state.active_run}（manifest 缺失，请运行 speccraft validate）`);
@@ -65,6 +74,7 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
     }
   }
 
+  console.log('Stages:');
   for (const stage of workflow.stages) {
     const status = state.stages[stage.id]?.status ?? 'pending';
     console.log(`  ${status.padEnd(STATUS_WIDTH)} ${stage.id}`);
@@ -300,6 +310,77 @@ export async function cmdVerify(projectRoot: string = process.cwd()): Promise<nu
   return result.passed ? 0 : 1;
 }
 
+/** speccraft accept [--note <text> | --file <path>] [--by <who>] */
+export async function cmdAccept(
+  opts: { note?: string; file?: string; by?: string },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { workflow, state, speccraftDir } = await loadProject(projectRoot);
+  const { getActiveRun } = await import('../core/execution/store.js');
+  const run = await getActiveRun(speccraftDir, state.active_run);
+  if (!run) {
+    console.error('错误：没有活跃的 Execution Run，无法 accept。');
+    return 1;
+  }
+
+  const feedback = await resolveFeedback(opts.note, opts.file, 'acceptance note');
+  const { accept } = await import('../core/acceptance/lifecycle.js');
+  const { attempt } = await accept(speccraftDir, projectRoot, workflow, state, run, {
+    by: opts.by ?? 'owner',
+    ...(feedback !== undefined ? { feedback } : {}),
+  });
+  console.log(`Owner Acceptance：ACCEPTED（acceptance attempt ${attempt}）`);
+  console.log('owner-acceptance = completed');
+  console.log('下一步：speccraft handoff');
+  return 0;
+}
+
+/** speccraft reject --reason <text> | --file <path> */
+export async function cmdReject(
+  opts: { reason?: string; file?: string },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  if (!opts.reason && !opts.file) {
+    console.error('错误：reject 必须提供反馈（--reason 或 --file 二选一）。');
+    return 1;
+  }
+  const { workflow, state, speccraftDir } = await loadProject(projectRoot);
+  const { getActiveRun } = await import('../core/execution/store.js');
+  const run = await getActiveRun(speccraftDir, state.active_run);
+  if (!run) {
+    console.error('错误：没有活跃的 Execution Run，无法 reject。');
+    return 1;
+  }
+
+  const feedback = (await resolveFeedback(opts.reason, opts.file, 'acceptance feedback')) ?? '';
+  if (!feedback.trim()) {
+    console.error('错误：reject 反馈不能为空。');
+    return 1;
+  }
+  const { reject } = await import('../core/acceptance/lifecycle.js');
+  const { attempt } = await reject(speccraftDir, projectRoot, workflow, state, run, {
+    feedback,
+  });
+  console.log(`Owner Acceptance：REJECTED（acceptance attempt ${attempt}）`);
+  console.log('implementation 已重新打开（同一 Run 返工）。');
+  console.log('修复后：speccraft implement finish --report <path>');
+  return 0;
+}
+
+/** 从 --note/--reason 或 --file 解析反馈文本 */
+async function resolveFeedback(
+  inline: string | undefined,
+  file: string | undefined,
+  label: string,
+): Promise<string | undefined> {
+  if (inline !== undefined && inline !== '') return inline;
+  if (file) {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(path.resolve(file), 'utf8');
+  }
+  return undefined;
+}
+
 /** speccraft validate（状态一致性 + execution 一致性） */
 export async function cmdValidate(projectRoot: string = process.cwd()): Promise<number> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
@@ -382,7 +463,135 @@ async function validateExecutionConsistency(speccraftDir: string, state: State):
     violations.push(`run.status = verification_failed，但 implementation 状态为 ${impl}（应回到 in_progress 返工）`);
   }
 
+  // ---- Acceptance / Handoff 一致性（ADR 0004 §7） ----
+  const acceptance = state.stages['owner-acceptance']?.status ?? 'pending';
+  const handoff = state.stages['handoff']?.status ?? 'pending';
+
+  // Invariant 1：run awaiting_owner_acceptance → verification completed +
+  //   owner-acceptance waiting_owner_approval
+  if (run.status === 'awaiting_owner_acceptance') {
+    if (verif !== 'completed') {
+      violations.push(`run.status = awaiting_owner_acceptance，但 verification 为 ${verif}`);
+    }
+    if (acceptance !== 'waiting_owner_approval') {
+      violations.push(`run.status = awaiting_owner_acceptance，但 owner-acceptance 为 ${acceptance}`);
+    }
+  }
+
+  // Invariant 2：run acceptance_rejected → implementation in_progress +
+  //   verification != completed + owner-acceptance blocked + latest accepted? no（rejected）
+  if (run.status === 'acceptance_rejected') {
+    if (impl !== 'in_progress') {
+      violations.push(`run.status = acceptance_rejected，但 implementation 为 ${impl}`);
+    }
+    if (verif === 'completed') {
+      violations.push('run.status = acceptance_rejected，但 verification 仍为 completed');
+    }
+    if (acceptance !== 'blocked') {
+      violations.push(`run.status = acceptance_rejected，但 owner-acceptance 为 ${acceptance}`);
+    }
+    if (run.acceptance.status !== 'rejected') {
+      violations.push('run.status = acceptance_rejected，但 latest acceptance 不是 rejected');
+    }
+  }
+
+  // Invariant 3：run accepted → verification completed + owner-acceptance completed +
+  //   latest acceptance accepted
+  if (run.status === 'accepted') {
+    if (verif !== 'completed') {
+      violations.push(`run.status = accepted，但 verification 为 ${verif}`);
+    }
+    if (acceptance !== 'completed') {
+      violations.push(`run.status = accepted，但 owner-acceptance 为 ${acceptance}`);
+    }
+    if (run.acceptance.status !== 'accepted') {
+      violations.push('run.status = accepted，但 latest acceptance 不是 accepted');
+    }
+  }
+
+  // Invariant 4：run handed_off → verification/owner-acceptance/handoff completed +
+  //   handoff package 存在
+  if (run.status === 'handed_off') {
+    if (verif !== 'completed') violations.push('run.status = handed_off，但 verification 未 completed');
+    if (acceptance !== 'completed') violations.push('run.status = handed_off，但 owner-acceptance 未 completed');
+    if (handoff !== 'completed') violations.push('run.status = handed_off，但 handoff 未 completed');
+    if (run.acceptance.status !== 'accepted') violations.push('run.status = handed_off，但 latest acceptance 不是 accepted');
+    if (!run.handoffId) violations.push('run.status = handed_off，但缺少 handoff_id');
+    if (run.handoffId) {
+      const { access: acc } = await import('node:fs/promises');
+      const handoffPath = path.join(speccraftDir, 'handoffs', run.handoffId, 'HANDOFF.md');
+      try {
+        await acc(handoffPath);
+      } catch {
+        violations.push(`run.status = handed_off，但 handoff package 不存在：${run.handoffId}`);
+      }
+    }
+  }
+
+  // Invariant 5：acceptance attempt 序号连续递增
+  const attemptSeq = await checkAcceptanceAttemptSequence(speccraftDir, run.id);
+  if (attemptSeq) violations.push(attemptSeq);
+
+  // Invariant 6：acceptance record 引用真实存在的 run + verification attempt
+  const refCheck = await checkAcceptanceReferences(speccraftDir, run.id);
+  if (refCheck) violations.push(refCheck);
+
   return violations;
+}
+
+/** Invariant 5：acceptance-001/002/003 必须连续递增 */
+async function checkAcceptanceAttemptSequence(
+  speccraftDir: string,
+  runId: string,
+): Promise<string | null> {
+  const { readdir } = await import('node:fs/promises');
+  const dir = path.join(speccraftDir, 'runs', runId, 'acceptance');
+  let files: string[];
+  try {
+    files = (await readdir(dir)).filter((f) => /^acceptance-\d+\.md$/.test(f));
+  } catch {
+    return null;
+  }
+  const nums = files
+    .map((f) => Number(f.match(/acceptance-(\d+)\.md/)![1]))
+    .sort((a, b) => a - b);
+  for (let i = 0; i < nums.length; i++) {
+    if (nums[i] !== i + 1) {
+      return `acceptance attempt 序号不连续：期望 ${i + 1}，实际 ${nums[i]}`;
+    }
+  }
+  return null;
+}
+
+/** Invariant 6：acceptance record 引用真实存在的 run + verification attempt */
+async function checkAcceptanceReferences(
+  speccraftDir: string,
+  runId: string,
+): Promise<string | null> {
+  const { listAcceptanceRecords } = await import('../core/acceptance/store.js');
+  const records = await listAcceptanceRecords(speccraftDir, runId);
+  for (const rec of records) {
+    if (rec.frontmatter.run_id !== runId) {
+      return `acceptance record ${rec.filename} 的 run_id 不匹配（${rec.frontmatter.run_id}）`;
+    }
+    // verification_attempt 必须 <= 当前 run.verificationAttempts（真实存在的历史）
+    const maxAttempt = await readMaxVerificationAttempt(speccraftDir, runId);
+    if (rec.frontmatter.verification_attempt > maxAttempt) {
+      return `acceptance record ${rec.filename} 引用不存在的 verification attempt ${rec.frontmatter.verification_attempt}`;
+    }
+  }
+  return null;
+}
+
+async function readMaxVerificationAttempt(speccraftDir: string, runId: string): Promise<number> {
+  const { readdir } = await import('node:fs/promises');
+  const dir = path.join(speccraftDir, 'runs', runId, 'verification');
+  try {
+    const files = (await readdir(dir)).filter((f) => /^attempt-\d+\.yaml$/.test(f));
+    return files.length;
+  } catch {
+    return 0;
+  }
 }
 
 /** 检查 run 目录中是否存在 passed=true 的 attempt */
