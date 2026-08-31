@@ -221,7 +221,7 @@ test('M2.0：显式声明 auto_complete 的新 workflow 不再走 legacy 兼容'
   assert.equal(state.stages['b'].status, 'pending');
 });
 
-test('M2.0：verification completed 后 current_stage 停在 verification', () => {
+test('M2.0：verification completed 后 current_stage 前进到 owner-acceptance', () => {
   const state = createInitialState(workflow);
   for (const id of ['idea', 'feasibility', 'discovery', 'requirement', 'concept', 'research', 'design']) {
     completeStage(workflow, state, id);
@@ -236,8 +236,10 @@ test('M2.0：verification completed 后 current_stage 停在 verification', () =
 
   markStageCompleted(workflow, state, 'verification');
   assert.equal(state.stages['verification'].status, 'completed');
-  assert.equal(state.current_stage, 'verification');
-  // owner-acceptance 是 owner_approval 门禁，不会自动进入
+  // ADR 0004：verification completed 后 current_stage 前进到 owner-acceptance
+  // （gate = all_required_completed，verification completed 即满足可进入）
+  assert.equal(state.current_stage, 'owner-acceptance');
+  // owner-acceptance 不 auto_complete，保持 pending（等待显式 accept/reject）
   assert.equal(state.stages['owner-acceptance'].status, 'pending');
 });
 

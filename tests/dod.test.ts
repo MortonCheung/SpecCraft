@@ -53,6 +53,7 @@ test('M2.7 DoD #27：manual adapter 可单独运行（无 CLI / 无 AI / 无 Git
       promptFile: 'agent-prompt.md',
       reports: [],
       verificationAttempts: 0,
+      acceptance: { attempt: 0, status: 'none' },
     },
     executionManual: '# 手册\n\n实施它。',
     compiledContext: '# Execution Context\n\n需求。',

@@ -9,7 +9,12 @@ import { readFile, writeFile, mkdir, access, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import yaml from 'js-yaml';
-import type { ExecutionRunManifest, ExecutionRunStatus, RunReportEntry } from './types.js';
+import type {
+  ExecutionRunManifest,
+  ExecutionRunStatus,
+  RunReportEntry,
+  RunAcceptanceState,
+} from './types.js';
 import { isExecutionRunStatus } from './types.js';
 
 /** .speccraft/ 下的 runs 目录名 */
@@ -67,6 +72,7 @@ export function parseRunManifest(source: string): ExecutionRunManifest {
         : typeof obj.verificationAttempts === 'number' && obj.verificationAttempts >= 0
           ? obj.verificationAttempts
           : 0,
+    acceptance: parseAcceptance(obj.acceptance),
   };
 
   const startedAt = readStr(obj.started_at) ?? readStr(obj.startedAt);
@@ -79,7 +85,28 @@ export function parseRunManifest(source: string): ExecutionRunManifest {
   const finalGit = parseGitSnapshot(obj.final_git ?? obj.finalGit);
   if (finalGit) manifest.finalGit = finalGit;
 
+  const handoffId = readStr(obj.handoff_id) ?? readStr(obj.handoffId);
+  if (handoffId) manifest.handoffId = handoffId;
+  const handoffAt = readStr(obj.handoff_at) ?? readStr(obj.handoffAt);
+  if (handoffAt) manifest.handoffAt = handoffAt;
+
   return manifest;
+}
+
+function parseAcceptance(value: unknown): RunAcceptanceState {
+  if (typeof value !== 'object' || value === null) {
+    return { attempt: 0, status: 'none' };
+  }
+  const obj = value as Record<string, unknown>;
+  const attempt =
+    typeof obj.attempt === 'number' && obj.attempt >= 0 ? obj.attempt : 0;
+  const rawStatus = typeof obj.status === 'string' ? obj.status : 'none';
+  const status: RunAcceptanceState['status'] =
+    rawStatus === 'accepted' || rawStatus === 'rejected' ? rawStatus : 'none';
+  const latestRecord = readStr(obj.latest_record) ?? readStr(obj.latestRecord);
+  const result: RunAcceptanceState = { attempt, status };
+  if (latestRecord) result.latestRecord = latestRecord;
+  return result;
 }
 
 function readStr(value: unknown): string | undefined {
@@ -112,10 +139,12 @@ export async function createRun(
     promptFile: init.promptFile ?? 'agent-prompt.md',
     reports: [],
     verificationAttempts: 0,
+    acceptance: { attempt: 0, status: 'none' },
   };
 
   const targetDir = path.join(dir, runId);
   await mkdir(path.join(targetDir, 'verification'), { recursive: true });
+  await mkdir(path.join(targetDir, 'acceptance'), { recursive: true });
   await mkdir(path.join(targetDir, 'logs'), { recursive: true });
   await writeRun(speccraftDir, manifest);
   return manifest;
@@ -195,6 +224,15 @@ export function stringifyRunManifest(manifest: ExecutionRunManifest): string {
       prompt_file: manifest.promptFile,
       reports: manifest.reports.map((r) => ({ file: r.file, recorded_at: r.recordedAt })),
       verification_attempts: manifest.verificationAttempts,
+      acceptance: {
+        attempt: manifest.acceptance.attempt,
+        status: manifest.acceptance.status,
+        ...(manifest.acceptance.latestRecord
+          ? { latest_record: manifest.acceptance.latestRecord }
+          : {}),
+      },
+      ...(manifest.handoffId ? { handoff_id: manifest.handoffId } : {}),
+      ...(manifest.handoffAt ? { handoff_at: manifest.handoffAt } : {}),
     },
     { indent: 2, lineWidth: -1, noRefs: true },
   );

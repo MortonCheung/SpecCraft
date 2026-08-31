@@ -1,10 +1,10 @@
 name: default
-version: "0.2.0"
+version: "0.3.0"
 
-# SpecCraft 默认 Workflow（声明式，见 ADR 0002 §7 / ADR 0003 §3）
+# SpecCraft 默认 Workflow（声明式，见 ADR 0002 §7 / ADR 0003 §3 / ADR 0004 §3）
 # 16 阶段；gate.type 取值：all_required_completed | owner_approval
 # auto_complete: true 表示 gate 满足时自动级联完成（缺省 false）。
-# implementation / owner-acceptance 必须显式推进，故保持缺省。
+# implementation / owner-acceptance / handoff 必须显式推进，故保持缺省。
 
 stages:
   - id: idea
@@ -103,10 +103,15 @@ stages:
   - id: owner-acceptance
     requires: [verification]
     produces: []
-    gate: { type: owner_approval }
+    # ADR 0004：verification 完成（机器验证通过）后进入本阶段，
+    # 等待 Owner 显式 ACCEPT / REJECT（人类验收权威）。
+    # gate 用 all_required_completed 表达「verification completed」，
+    # 而非 owner_approval（verification 不是被 approve 的对象）。
+    gate: { type: all_required_completed }
 
   - id: handoff
     requires: [owner-acceptance]
     produces: [handoff]
     template: handoff
+    # 由 `speccraft handoff` 命令显式推进（不声明 auto_complete）
     gate: { type: all_required_completed }

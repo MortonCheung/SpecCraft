@@ -172,6 +172,7 @@ test('M2.1：manifest parse/stringify 往返（含 finalGit）', () => {
       promptFile: 'agent-prompt.md',
       reports: [{ file: 'agent-report-001.md', recordedAt: '2026-08-31T00:50:00Z' }],
       verificationAttempts: 2,
+      acceptance: { attempt: 1, status: 'rejected', latestRecord: 'acceptance/acceptance-001.md' },
     }),
   );
   assert.equal(manifest.id, 'run-x');
@@ -179,6 +180,9 @@ test('M2.1：manifest parse/stringify 往返（含 finalGit）', () => {
   assert.deepEqual(manifest.finalGit, { branch: 'feat/a', commit: 'bbb', dirty: false });
   assert.equal(manifest.reports.length, 1);
   assert.equal(manifest.verificationAttempts, 2);
+  assert.equal(manifest.acceptance.attempt, 1);
+  assert.equal(manifest.acceptance.status, 'rejected');
+  assert.equal(manifest.acceptance.latestRecord, 'acceptance/acceptance-001.md');
 });
 
 test('M2.1：state.active_run 兼容旧 state.yaml（缺省可加载）', async () => {

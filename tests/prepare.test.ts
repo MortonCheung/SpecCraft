@@ -183,6 +183,7 @@ test('M2.2 #27：manual adapter 可单独运行（不依赖 CLI）', async () =>
       promptFile: 'agent-prompt.md',
       reports: [],
       verificationAttempts: 0,
+      acceptance: { attempt: 0, status: 'none' },
     },
     executionManual: '# 手册\n\n做一件事。',
     compiledContext: '# Execution Context\n\n上游内容。',
