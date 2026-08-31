@@ -739,6 +739,25 @@ export async function cmdDispatch(
       }
     }
     const runContextPath = path.join(speccraftDir, 'runs', run.id, 'context.md');
+
+    // v0.7 §58.1：单 Task Preflight Gate（frozen plan 存在时）。adapter 不可用 →
+    // 中止且零副作用（no task status change / no dispatch attempt）。
+    if (executorPlan) {
+      const { preflightExecutorPlan, formatPreflightBlocked } = await import('../core/executors/preflight.js');
+      const singlePlan = {
+        ...executorPlan,
+        assignments: executorPlan.assignments.filter((a) => a.taskId === opts.task),
+      };
+      if (singlePlan.assignments.length > 0) {
+        const preflight = await preflightExecutorPlan(singlePlan);
+        if (preflight.status === 'blocked') {
+          console.error(formatPreflightBlocked(preflight));
+          console.error('修复后：speccraft executors doctor');
+          return 1;
+        }
+      }
+    }
+
     let runContext = '';
     try {
       runContext = await readFile(runContextPath, 'utf8');
@@ -1966,6 +1985,19 @@ export async function cmdExecute(
   const { buildExecutorResolver } = await import('../core/executors/resolver.js');
   const executorPlan = opts.adapter ? null : await readExecutorPlanOrNull(speccraftDir, runId);
   const executorResolver = executorPlan ? buildExecutorResolver({ plan: executorPlan }) : undefined;
+
+  // v0.7 §58.1：Executor Preflight Gate。frozen plan 任一 adapter 不可用 →
+  // 整体 blocked，且不产生任何施工副作用（no implementStart / no worktree /
+  // no task status change / no dispatch attempt / canonical unchanged）。
+  if (executorPlan) {
+    const { preflightExecutorPlan, formatPreflightBlocked } = await import('../core/executors/preflight.js');
+    const preflight = await preflightExecutorPlan(executorPlan);
+    if (preflight.status === 'blocked') {
+      console.error(formatPreflightBlocked(preflight));
+      console.error('修复后：speccraft executors doctor');
+      return 1;
+    }
+  }
 
   const { readFile } = await import('node:fs/promises');
   let runContext = '';
