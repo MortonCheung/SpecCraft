@@ -1,7 +1,8 @@
 # Task Orchestration
 
 **v0.5 默认 sequential by design；v0.6 已实现可选的 worktree 隔离并行
-（`execute --parallel`），本文档描述 deterministic 调度语义。**
+（`execute --parallel`）；v0.7 增加异构多 Executor 路由。本文档描述
+deterministic 调度语义。**
 
 ## 确定性顺序 Scheduler
 
@@ -56,6 +57,32 @@ safe integration，见 [parallel-execution.md](parallel-execution.md) 与
 - session isolation 按 `run + task + adapter`，不同 Task 不共享 session；
 - 同 Task retry 默认 resume，`--fresh-session` 强制新 session；
 - Dispatch SUCCESS ≠ Task completed（保持 in_progress，等待 Task Verification）。
+
+## 异构 Executor 路由（v0.7）
+
+Task Graph 的 Task 可声明 `executor`。`speccraft tasks compile` 编译 Task
+Graph 时同时生成 **frozen Executor Plan**（`executors/plan.yaml`），每个
+Task 恰好一个 Assignment（Task → Executor → Adapter）。
+
+Runtime 通过 `ExecutorResolver` 按 Task 从 frozen plan.yaml 解析
+Executor → Adapter（`taskId → ExecutorResolver → CliExecutionAdapter`）：
+
+```text
+resolve(taskId)
+  → assignment = plan.assignments[taskId]
+  → adapter    = registry.get(assignment.adapter)     // 只读 plan，不读 project.yaml
+  → return { executorId, adapter, adapterConfig }
+```
+
+- 无 plan / 无 executorResolver（legacy）→ 退化为 single-executor fallback
+  （`options.adapter`，v0.6 行为不变）；
+- Explicit Executor Graph 禁止 `--adapter` 覆盖（`--adapter cannot override
+  explicit Task Executor assignments`）；
+- `execute` / `dispatch --task` 在施工副作用前执行 **Executor Preflight**
+  （adapter 未安装 → `execution preflight blocked`，零副作用）；
+- 故障语义：Provider spawn failure 走 Task failure 语义且**禁止 fallback**；
+  Retry / Owner Rework 后 executor 仍来自 frozen plan（不变量，见
+  [executor-routing.md](executor-routing.md)）。
 
 ## Task Verification
 

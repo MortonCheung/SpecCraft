@@ -1,9 +1,10 @@
-# Parallel Execution（v0.6）
+# Parallel Execution（v0.6 / v0.7）
 
 **并行性通过隔离、范围证明、验证和确定性集成获得，绝不基于「任务独立性假设」。**
 
 设计决策见 [ADR 0007](decisions/0007-safe-parallel-execution-and-worktree-isolation.md)。
 隔离机制（worktree / workspace / attempt）详见 [worktree-isolation.md](worktree-isolation.md)。
+异构 Executor 的 Wave 路由（v0.7）详见 [executor-routing.md](executor-routing.md)。
 
 ## 启用方式
 
@@ -33,13 +34,35 @@ speccraft execute --parallel --max-parallel 3
 
 ## Deterministic Wave Planner
 
-wave 由三条规则**确定性**计算（不随机、不 LLM 排序）：
+wave 由规则**确定性**计算（不随机、不 LLM 排序）。
+
+v0.6 三条规则：
 
 1. 只有 `ready` 状态的 Task 进入候选（依赖全部 completed）；
 2. 候选按 Execution Manual **声明顺序**遍历，scope 冲突（见
    [worktree-isolation.md](worktree-isolation.md) 的 Scope Engine）的 Task
    被推迟到后续 wave；
 3. wave 内 Task 数不超过 `maxParallel`。
+
+v0.7 增加第四条 —— **Executor Profile concurrency capacity**：
+
+4. 候选 Task 的 Executor Assignment 来自 frozen Executor Plan（不是每次重新读取
+   project.yaml）；若该 Task 的 Executor Profile 声明了 `max_concurrency`，
+   且当前 wave 已选中同 Profile 的 Task 数达到上限，则该 Task 被推迟到后续 wave。
+
+即 v0.7 Wave Eligibility 完整为：
+
+```text
+ready
++ scope compatible
++ global maxParallel
++ Executor Profile concurrency capacity
+```
+
+并发上限以 **Executor Profile** 为单位（不同 Profile 即使使用同一 Adapter，容量
+也各计，不实现 Adapter-level rate limiter）。Profile 缺省 `max_concurrency` 时不
+增加额外限制，只受全局 `--max-parallel` 约束。规则与算法见
+[executor-routing.md](executor-routing.md)。
 
 示例（diamond 图）：
 

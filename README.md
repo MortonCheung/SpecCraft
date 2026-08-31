@@ -14,7 +14,7 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 ## 当前开发阶段
 
-**v0.6 — Safe Parallel Execution & Worktree Isolation**
+**v0.7 — Heterogeneous Multi-Executor Routing**
 
 版本演进：
 
@@ -24,8 +24,9 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 - v0.4 Agent Adapters + Hooks
 - v0.5 Task Graph + Deterministic Orchestration
 - v0.6 Safe Parallel Execution + Worktree Isolation
+- v0.7 Heterogeneous Multi-Executor Routing
 
-已实现（v0.1 → v0.6 累计）：
+已实现（v0.1 → v0.7 累计）：
 
 - 声明式 16 阶段 Workflow、`.speccraft` 文件优先工作现场（无数据库）；
 - Context Compiler、Execution Run、Verification / Owner Acceptance / Handoff Runtime；
@@ -39,17 +40,22 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
   执行 + Scope Audit + 运行时 Task Commit + 确定性集成（`execute --parallel`）；
 - **Workspace Runtime**：Workspace Attempt / Wave Manifest / 工作区诊断
   （`workspaces list/show/clean`）；
+- **Executor Routing（v0.7）**：Executor Profile → 确定性 frozen Executor
+  Plan，Task 显式路由到异构 Executor（`executors list/plan/doctor`、
+  `execute` / `dispatch --task` 多 Executor 顺序与并行、Preflight 门禁、
+  故障/返工语义、Executor Plan Recompile Guard、validate 不变量、
+  handoff executor-history.md）；
 - SpecCraft Core 不依赖任何特定 AI 厂商；Provider-specific 能力以可选
   CLI Adapter 存在。
 
-尚未实现（后续版本）：异构多 Executor 路由（v0.7）、SaaS 后端、Web 控制台、
-云同步、Provider SDK / API-key 管理。
+尚未实现（后续版本）：SaaS 后端、Web 控制台、云同步、Provider SDK /
+API-key 管理。
 
 ## CLI
 
 ```bash
 speccraft init [projectRoot] [--force]     # 初始化工作现场
-speccraft status                           # 阶段 / Run / Dispatch / Acceptance / Handoff
+speccraft status                           # 阶段 / Run / Dispatch / Acceptance / Handoff / Executors
 speccraft next                             # 下一步引导（含 Task 级路线）
 speccraft approve <stage> [--by <who>]     # Owner 批准（硬门禁）
 speccraft artifact <stage>                 # 生成阶段 artifact 并推进
@@ -61,15 +67,16 @@ speccraft adapters doctor [id]             # 本机 Provider 能力诊断
 speccraft dispatch [--adapter <id>] [--run <id>] [--fresh-session] [--task <id>]
                                            # 调用本地 CLI Agent 自动施工
 speccraft tasks compile|list|next|show|verify|reopen
-                                           # Task Graph 管理
+                                           # Task Graph 管理（compile 同时生成 frozen Executor Plan）
 speccraft execute [--adapter <id>] [--parallel] [--max-parallel <n>]
                                            # 确定性执行整个 Task Graph（顺序或 worktree 并行）
+speccraft executors list|plan|doctor       # Executor Profile / frozen Plan / preflight 诊断
 speccraft workspaces list|show|clean      # 工作区诊断（worktree / branch / status）
 speccraft verify                           # 运行项目验证命令（PASS/FAIL）
 speccraft accept [--note|--file] [--by]    # Owner 验收通过
 speccraft reject --reason <text>|--file    # Owner 拒绝（同 Run 返工）
 speccraft handoff                          # 生成 Handoff Package
-speccraft validate                         # 状态/execution/acceptance/dispatch/task 一致性检查
+speccraft validate                         # 状态/execution/acceptance/dispatch/task/executor 一致性检查
 ```
 
 ## Task Graph（v0.5）
@@ -79,6 +86,11 @@ speccraft validate                         # 状态/execution/acceptance/dispatc
 Task-level verification、返工与顺序/并行调度。**默认 sequential
 （单写者，不并行）**；`--parallel` 显式启用 Git Worktree 隔离并行
 （确定性 Wave + 范围审计 + 运行时提交 + 确定性集成）。
+
+v0.7 起，Task Graph 的每个 Task 可声明 `executor`，编译时同时生成
+**frozen Executor Plan**（`executors/plan.yaml`），把 Task 确定性路由到
+异构 Executor Profile → Adapter。详见
+[docs/executor-routing.md](docs/executor-routing.md)。
 
 详见 [docs/task-graph.md](docs/task-graph.md)、
 [docs/task-orchestration.md](docs/task-orchestration.md)、
@@ -155,8 +167,9 @@ speccraft handoff   # 生成 .speccraft/handoffs/handoff-001/
 ```
 
 包含 `HANDOFF.md` / `context.md` / `decisions.md` / `execution-history.md` /
-`task-history.md` / `verification-history.md` / `acceptance-history.md` /
-`workspace-history.md`（并行 route）/ `manifest.yaml`。
+`task-history.md` / `workspace-history.md`（并行 route）/ `executor-history.md`
+（v0.7，Task / Executor / Adapter / Provider Session）/ `verification-history.md` /
+`acceptance-history.md` / `manifest.yaml`。
 确定性模板生成（不调用 AI），幂等（重复 handoff 不产生新包）。
 
 ## 核心 Workflow
@@ -179,12 +192,14 @@ speccraft handoff   # 生成 .speccraft/handoffs/handoff-001/
 
 本仓库当前 **未达到 Production Ready**。
 
-v0.6 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
+v0.7 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
 Verification / Owner Acceptance / Handoff Runtime、Adapter Runtime
 （manual + codex/claude/opencode/trae CLI Adapter）、Dispatch Runtime、
 Hook Runtime、Task Graph + 确定性顺序/并行编排（Git Worktree 隔离 +
-Scope Audit + 运行时提交 + 确定性集成）。尚未实现：异构多 Executor
-路由（v0.7）、SaaS 后端、Web 控制台、云同步、Provider SDK / API-key 管理。
+Scope Audit + 运行时提交 + 确定性集成）、异构多 Executor 路由
+（Executor Profile → frozen Executor Plan → Preflight → 顺序/并行执行 →
+故障/返工语义 → Recompile Guard → validate 不变量 → executor-history）。
+尚未实现：SaaS 后端、Web 控制台、云同步、Provider SDK / API-key 管理。
 
 ## License
 

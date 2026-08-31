@@ -1,7 +1,19 @@
-# Agent Adapters（v0.4）
+# Agent Adapters（v0.4 / v0.7）
 
 SpecCraft Core 不依赖任何特定 AI 厂商；Provider-specific 能力以**可选 CLI Adapter**
 存在。v0.4 只连接用户**本机已安装、已登录、已配置**的 CLI Agent。
+
+v0.7 在其上引入 **Executor Profile**：Adapter 描述「某个 CLI 如何被调用」，Executor
+Profile 描述「某一种施工 Executor 身份如何使用这个 Adapter」。三层关系：
+
+```text
+Task
+→ Executor Profile（SpecCraft 定义的施工身份）
+→ Adapter（Provider CLI 连接）
+→ Provider Session（某次执行器会话）
+```
+
+完整路由语义见 [executor-routing.md](executor-routing.md)。
 
 ## 两种模式
 
@@ -62,11 +74,27 @@ Verification FAIL 或 Owner REJECT 都重开 implementation、同 Run 返工。
 - `--fresh-session` 开新 session；
 - `--adapter <other>` 切换 provider → 新 session，但仍属同一 Run。
 
+v0.7 起 session lookup key 升级为：
+
+```text
+run + task + workspaceAttempt + executorProfile + adapter
+```
+
+`fast-codex` 与 `quality-codex` 即使 Adapter 都是 `codex`，也不是同一个 Executor
+Identity，禁止交叉 resume。同 Task 同 Workspace Attempt 同 Executor Profile 才
+允许 resume；新 Workspace Attempt 必须是 fresh Provider Session。注意：若 Task
+已显式声明 `executor`，`--adapter` 不得覆盖（见
+[executor-routing.md](executor-routing.md) 的 `--adapter` 守卫）。
+
 ## CLI
 
 ```bash
 speccraft adapters list           # 列出全部 adapter
 speccraft adapters doctor [id]    # 本机能力诊断（不发 AI 请求、不耗 Token）
+
+speccraft executors list          # v0.7：project.yaml 的 Executor Profile（Executor/Adapter/Model/Max Concurrency）
+speccraft executors plan          # v0.7：当前 Run 的 frozen Executor Plan（Task/Executor/Adapter/Source/Concurrency）
+speccraft executors doctor        # v0.7：probe 当前 Executor Plan 实际需要的 Adapter（按 adapter 去重）
 
 speccraft prepare --adapter codex
 speccraft dispatch                # 用 default_adapter
@@ -76,6 +104,8 @@ speccraft dispatch --fresh-session
 ```
 
 ## project.yaml 配置
+
+Adapter 配置（v0.4）：
 
 ```yaml
 execution:
@@ -90,6 +120,30 @@ execution:
       command: claude
       timeout_seconds: 3600
 ```
+
+Executor Profile 配置（v0.7，可选；缺失时 Runtime 自动建立逻辑
+`legacy-default`，adapter = `execution.default_adapter`）：
+
+```yaml
+execution:
+  default_executor: primary
+  executors:
+    primary:
+      adapter: claude
+      max_concurrency: 2
+    frontend:
+      adapter: codex
+      model: some-model
+      max_concurrency: 1
+    backend:
+      adapter: claude
+      timeout_seconds: 1200
+```
+
+Profile 可以覆盖 Adapter 的 model / timeout / extra_args / sandbox（配置优先级：
+`Executor Profile override → Adapter config → Adapter implementation default`），
+但**禁止**在 Profile 中放 API key / token / secret / credential。Task 通过
+Execution Manual 显式声明 `executor: <profile-id>`，或缺省走 `default_executor`。
 
 不在此处保存 Secret。
 

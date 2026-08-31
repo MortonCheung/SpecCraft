@@ -73,6 +73,9 @@ async function main() {
       process.exit(0);
       return;
     case 'fail':
+      // 真实 Provider 行为：agent 启动即建立 session，即使后续失败 session 仍存在（可 resume）。
+      // 先输出 agent_started 事件（带 session_id），再报错退出。
+      console.log(JSON.stringify({ type: 'agent_started', session_id: session }));
       console.error('fake-agent: something went wrong');
       process.exit(1);
       return;
