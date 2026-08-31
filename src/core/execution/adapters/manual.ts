@@ -9,13 +9,14 @@
  */
 
 import type {
-  ExecutionAdapter,
+  ManualExecutionAdapter,
   ExecutionAdapterInput,
   PreparedExecution,
 } from './types.js';
 
-export const manualAdapter: ExecutionAdapter = {
+export const manualAdapter: ManualExecutionAdapter = {
   id: 'manual',
+  kind: 'manual',
 
   async prepare(input: ExecutionAdapterInput): Promise<PreparedExecution> {
     return {
