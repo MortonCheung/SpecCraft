@@ -11,7 +11,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import type { AdapterInvocation } from '../adapters/types.js';
+import type { AdapterInvocation } from '../execution/adapters/types.js';
 
 export interface DispatchProcessResult {
   exitCode: number | null;

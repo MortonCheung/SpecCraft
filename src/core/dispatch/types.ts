@@ -5,7 +5,7 @@
  * 归一化事件 / 结果复用 adapters/types.ts 的契约。
  */
 
-import type { AgentEvent, DispatchStatus, NormalizedDispatchResult } from '../adapters/types.js';
+import type { AgentEvent, DispatchStatus, NormalizedDispatchResult } from '../execution/adapters/types.js';
 
 /** .speccraft/runs/<run-id>/dispatch/attempt-NNN/manifest.yaml 的结构 */
 export interface DispatchAttemptManifest {

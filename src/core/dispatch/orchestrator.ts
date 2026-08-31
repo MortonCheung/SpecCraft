@@ -10,7 +10,7 @@
  */
 
 import path from 'node:path';
-import type { CliExecutionAdapter, NormalizedDispatchResult } from '../adapters/types.js';
+import type { CliExecutionAdapter, NormalizedDispatchResult } from '../execution/adapters/types.js';
 import { runDispatchProcess } from './runner.js';
 import { nextDispatchAttempt, writeDispatchAttempt } from './store.js';
 import { dispatchAttemptDir } from './types.js';
