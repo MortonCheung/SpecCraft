@@ -10,6 +10,7 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { CliExecutionAdapter } from '../execution/adapters/types.js';
+import type { ExecutorResolver } from '../executors/resolver.js';
 import type { TaskGraph, TaskManifest } from './types.js';
 import { readTaskGraph, readAllTaskManifests, writeTaskManifest } from './store.js';
 import { refreshStates, firstReadyTask, hasFailedTask, allCompleted } from './dependency.js';
@@ -27,6 +28,11 @@ export interface ExecuteOptions {
   executionGuard: string;
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
   freshSession?: boolean;
+  /**
+   * v0.7 ExecutorResolver（ADR 0008 §38）。提供时按 task 从 frozen plan.yaml 解析
+   * Executor → Adapter；缺省退化为 legacy single-executor fallback（options.adapter）。
+   */
+  executorResolver?: ExecutorResolver;
 }
 
 export interface ExecuteResult {
@@ -71,17 +77,30 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
     const task = graph.tasks.find((t) => t.id === next)!;
     executed.push(next);
 
+    // v0.7：per-task Executor 解析（ADR 0008 §38）。resolver 存在 → 按 task 取
+    // Executor → Adapter；缺省 → legacy single-executor fallback（options.adapter）。
+    let adapter = options.adapter;
+    let adapterConfig = options.adapterConfig;
+    let executorProfile: string | undefined;
+    if (options.executorResolver) {
+      const r = options.executorResolver.resolve(next);
+      adapter = r.adapter;
+      adapterConfig = r.adapterConfig;
+      executorProfile = r.executorId;
+    }
+
     // dispatch（task ready → in_progress）
     const d = await dispatchTask({
       speccraftDir,
       projectRoot: options.projectRoot,
       runId,
       taskId: next,
-      adapter: options.adapter,
+      adapter,
       runContext: options.runContext,
       executionGuard: options.executionGuard,
       freshSession: options.freshSession === true,
-      ...(options.adapterConfig ? { adapterConfig: options.adapterConfig } : {}),
+      ...(adapterConfig ? { adapterConfig } : {}),
+      ...(executorProfile ? { executorProfile } : {}),
     });
     if (!d.success) {
       return { complete: false, reason: 'dispatch_failed', completedTasks: countCompleted(graph, statuses), executed };

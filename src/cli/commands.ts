@@ -1651,6 +1651,21 @@ export async function cmdExecute(
   }
   const adapterConfig = config.execution?.adapters[adapterId];
 
+  // v0.7 §40：--adapter 规则。Explicit Executor Graph（任何 Task 声明 executor）
+  // 禁止 --adapter 覆盖；Legacy Graph 仍允许 single-adapter override。
+  const hasExplicitExecutor = graph.tasks.some((t) => t.executor !== undefined);
+  if (hasExplicitExecutor && opts.adapter) {
+    console.error('错误：--adapter cannot override explicit Task Executor assignments');
+    return 1;
+  }
+
+  // v0.7：frozen plan.yaml → ExecutorResolver（ADR 0008 §18、§38）。
+  // 仅当未传 --adapter（legacy single-adapter override）且 plan 存在时启用。
+  const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+  const { buildExecutorResolver } = await import('../core/executors/resolver.js');
+  const executorPlan = opts.adapter ? null : await readExecutorPlanOrNull(speccraftDir, runId);
+  const executorResolver = executorPlan ? buildExecutorResolver({ plan: executorPlan }) : undefined;
+
   const { readFile } = await import('node:fs/promises');
   let runContext = '';
   try {
@@ -1723,6 +1738,7 @@ export async function cmdExecute(
     executionGuard,
     freshSession: opts.freshSession === true,
     ...(adapterConfig ? { adapterConfig } : {}),
+    ...(executorResolver ? { executorResolver } : {}),
   });
 
   if (!result.complete) {
