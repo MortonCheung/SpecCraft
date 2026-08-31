@@ -19,11 +19,29 @@ export interface VerificationConfig {
   commands: string[];
 }
 
-/** .speccraft/project.yaml 的结构（兼容旧文件：verification 可选） */
+/** 单个 adapter 配置（ADR 0005；不含任何 Secret，认证由 Provider CLI 自己管理） */
+export interface ProjectAdapterConfig {
+  command?: string;
+  timeout_seconds?: number;
+  extra_args?: string[];
+  model?: string;
+  sandbox?: string;
+}
+
+/** execution 配置（ADR 0005 §2） */
+export interface ExecutionConfig {
+  /** 默认 adapter id（缺省 manual） */
+  defaultAdapter: string;
+  /** 各 adapter 的可选覆盖 */
+  adapters: Record<string, ProjectAdapterConfig>;
+}
+
+/** .speccraft/project.yaml 的结构（兼容旧文件：verification / execution 可选） */
 export interface ProjectConfig {
   name: string;
   createdAt?: string;
   verification?: VerificationConfig;
+  execution?: ExecutionConfig;
 }
 
 /** 解析 project.yaml 文本（旧文件无 verification 字段时给出安全默认值） */
@@ -72,6 +90,46 @@ export function parseProjectConfig(source: string): ProjectConfig {
     }
 
     config.verification = { timeoutSeconds, commands };
+  }
+
+  const e = obj.execution;
+  if (e !== undefined && e !== null) {
+    if (typeof e !== 'object' || Array.isArray(e)) {
+      throw new Error('project.yaml 的 execution 必须是对象');
+    }
+    const eo = e as Record<string, unknown>;
+
+    let defaultAdapter = 'manual';
+    if (eo.default_adapter !== undefined) {
+      if (typeof eo.default_adapter !== 'string' || !eo.default_adapter) {
+        throw new Error('execution.default_adapter 必须是非空字符串');
+      }
+      defaultAdapter = eo.default_adapter;
+    }
+
+    const adapters: Record<string, ProjectAdapterConfig> = {};
+    if (eo.adapters !== undefined && eo.adapters !== null) {
+      if (typeof eo.adapters !== 'object' || Array.isArray(eo.adapters)) {
+        throw new Error('execution.adapters 必须是对象');
+      }
+      for (const [id, raw] of Object.entries(eo.adapters as Record<string, unknown>)) {
+        if (typeof raw !== 'object' || raw === null) continue;
+        const a = raw as Record<string, unknown>;
+        const adapter: ProjectAdapterConfig = {};
+        if (typeof a.command === 'string' && a.command) adapter.command = a.command;
+        if (typeof a.timeout_seconds === 'number' && a.timeout_seconds > 0) {
+          adapter.timeout_seconds = a.timeout_seconds;
+        }
+        if (Array.isArray(a.extra_args)) {
+          adapter.extra_args = a.extra_args.filter((x): x is string => typeof x === 'string');
+        }
+        if (typeof a.model === 'string' && a.model) adapter.model = a.model;
+        if (typeof a.sandbox === 'string' && a.sandbox) adapter.sandbox = a.sandbox;
+        adapters[id] = adapter;
+      }
+    }
+
+    config.execution = { defaultAdapter, adapters };
   }
 
   return config;
