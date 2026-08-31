@@ -74,14 +74,10 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
 /** speccraft next */
 export async function cmdNext(projectRoot: string = process.cwd()): Promise<void> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
-  const waiting = findWaitingApproval(state);
-  if (waiting.length > 0) {
-    console.log(`待批准阶段：${waiting.join('、')}`);
-    console.log('请运行：speccraft approve <stage>');
-    return;
-  }
 
-  // Execution 生命周期引导（ready-to-implement 完成之后）
+  // Execution 生命周期引导优先（ready-to-implement 完成之后）。
+  // 注意顺序：owner-acceptance 处于 waiting_owner_approval，但它是 accept/reject
+  // 决策，不是 `speccraft approve` 的 design 审批，必须走 execution guidance。
   const ready = state.stages['ready-to-implement']?.status === 'completed';
   if (ready) {
     const guidance = await nextExecutionGuidance(speccraftDir, state);
@@ -89,6 +85,13 @@ export async function cmdNext(projectRoot: string = process.cwd()): Promise<void
       console.log(guidance);
       return;
     }
+  }
+
+  const waiting = findWaitingApproval(state);
+  if (waiting.length > 0) {
+    console.log(`待批准阶段：${waiting.join('、')}`);
+    console.log('请运行：speccraft approve <stage>');
+    return;
   }
 
   const next = nextStageId(workflow, state);
@@ -103,12 +106,32 @@ export async function cmdNext(projectRoot: string = process.cwd()): Promise<void
 async function nextExecutionGuidance(speccraftDir: string, state: State): Promise<string | null> {
   const impl = state.stages['implementation']?.status ?? 'pending';
   const verif = state.stages['verification']?.status ?? 'pending';
+  const acceptance = state.stages['owner-acceptance']?.status ?? 'pending';
+  const handoff = state.stages['handoff']?.status ?? 'pending';
+
+  if (handoff === 'completed') {
+    return [
+      'Workflow completed.',
+      `Handoff package 已生成（speccraft status 查看）。`,
+    ].join('\n');
+  }
 
   if (impl === 'completed' && verif === 'completed') {
-    return [
-      'SpecCraft v0.2 已到达 Verification。',
-      'Owner Acceptance 属于后续阶段。',
-    ].join('\n');
+    if (acceptance === 'completed') {
+      return '下一步：speccraft handoff';
+    }
+    if (acceptance === 'waiting_owner_approval') {
+      return [
+        'Machine verification passed.',
+        'Waiting for Owner Acceptance.',
+        '',
+        'Next:',
+        '  speccraft accept',
+        'or',
+        '  speccraft reject --reason "..."',
+      ].join('\n');
+    }
+    // blocked 状态应伴随 implementation 重开，见下方 in_progress 分支
   }
 
   if (impl === 'completed') {
@@ -116,9 +139,20 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
   }
 
   if (impl === 'in_progress') {
-    // 返工中：上一次 verification 未通过
     const { getActiveRun } = await import('../core/execution/store.js');
     const run = await getActiveRun(speccraftDir, state.active_run);
+    if (run?.status === 'acceptance_rejected') {
+      return [
+        'Owner rejected the verified implementation.',
+        '',
+        'Implementation has been reopened.',
+        '',
+        'Next:',
+        '  continue implementation',
+        '  speccraft implement finish --report <file>',
+      ].join('\n');
+    }
+    // 返工中：上一次 verification 未通过
     if (run?.status === 'verification_failed') {
       return [
         'Verification 未通过。',
@@ -306,12 +340,18 @@ async function validateExecutionConsistency(speccraftDir: string, state: State):
 
   if (!run) return violations;
 
-  // run verified ↔ verification completed
-  if (run.status === 'verified' && verif !== 'completed') {
-    violations.push(`run.status = verified，但 verification 状态为 ${verif}`);
-  }
-  if (verif === 'completed' && run.status !== 'verified') {
+  // run status ↔ verification completed（ADR 0004：PASS 后进入 owner acceptance）
+  const verifiedRunStatuses: string[] = [
+    'verified', // legacy v0.2
+    'awaiting_owner_acceptance',
+    'accepted',
+    'handed_off',
+  ];
+  if (verif === 'completed' && !verifiedRunStatuses.includes(run.status)) {
     violations.push(`verification = completed，但 run.status 为 ${run.status}`);
+  }
+  if (verif !== 'completed' && run.status === 'awaiting_owner_acceptance') {
+    violations.push(`run.status = awaiting_owner_acceptance，但 verification 状态为 ${verif}`);
   }
 
   // verification completed 必须存在 PASS attempt

@@ -132,9 +132,13 @@ export async function verifyExecution(options: VerifyOptions): Promise<VerifyRes
   run.verificationAttempts = attemptNo;
 
   if (passed) {
+    // ADR 0004：机器验证通过 ≠ Owner 验收。
+    // verification completed 后进入 owner-acceptance = waiting_owner_approval，
+    // run.status = awaiting_owner_acceptance，等待显式 ACCEPT/REJECT。
     setStageStatus(state, 'verification', 'completed');
-    state.current_stage = 'verification';
-    await updateRunStatus(speccraftDir, run, 'verified');
+    setStageStatus(state, 'owner-acceptance', 'waiting_owner_approval');
+    state.current_stage = 'owner-acceptance';
+    await updateRunStatus(speccraftDir, run, 'awaiting_owner_acceptance');
     await writeState(speccraftDir, state);
 
     await writeVerificationArtifact(speccraftDir, workflow.version, runId, attempt);

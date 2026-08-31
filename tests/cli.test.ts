@@ -151,7 +151,7 @@ test('M2.5 #23e：next 情况5 —— verification 未通过时提示返工', as
   }
 });
 
-test('M2.5 #23f：next 情况6 —— verification completed 时提示到达 v0.2 终点', async () => {
+test('M2.5 #23f：next 情况6 —— verification PASS 后提示 Owner Acceptance', async () => {
   const s = await newProject();
   try {
     await reachReady(s, ['true']);
@@ -163,8 +163,10 @@ test('M2.5 #23f：next 情况6 —— verification completed 时提示到达 v0.
     await verifyExecution({ projectRoot: s.root });
 
     const out = await captureStdout(() => cmdNext(s.root));
-    assert.match(out, /已到达 Verification/);
-    assert.match(out, /Owner Acceptance 属于后续阶段/);
+    assert.match(out, /Machine verification passed/);
+    assert.match(out, /Waiting for Owner Acceptance/);
+    assert.match(out, /speccraft accept/);
+    assert.match(out, /speccraft reject --reason/);
   } finally {
     await rm(s.root, { recursive: true, force: true });
   }

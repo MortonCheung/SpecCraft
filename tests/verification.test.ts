@@ -112,11 +112,12 @@ test('M2.4 #15：PASS → verification completed、run verified、verification.m
 
     const { state } = await loadProject(root);
     assert.equal(state.stages['verification'].status, 'completed');
-    assert.equal(state.current_stage, 'verification');
+    assert.equal(state.current_stage, 'owner-acceptance');
+    assert.equal(state.stages['owner-acceptance'].status, 'waiting_owner_approval');
     assert.equal(state.active_run, runId);
 
     const run = await readRun(speccraftDir, runId);
-    assert.equal(run.status, 'verified');
+    assert.equal(run.status, 'awaiting_owner_acceptance');
     assert.equal(run.verificationAttempts, 1);
 
     // verification.md 存在且与 state 一致
@@ -204,7 +205,7 @@ test('M2.4 #16#17#18：FAIL → blocked、implementation 回到 in_progress、�
     assert.equal(result2.runId, runId);
 
     const run2 = await readRun(speccraftDir, runId);
-    assert.equal(run2.status, 'verified');
+    assert.equal(run2.status, 'awaiting_owner_acceptance');
     assert.equal(run2.verificationAttempts, 2);
     assert.equal(run2.reports.length, 2);
 
@@ -227,6 +228,7 @@ test('M2.4 #16#17#18：FAIL → blocked、implementation 回到 in_progress、�
     const { state: finalState } = await loadProject(root);
     assert.equal(finalState.stages['verification'].status, 'completed');
     assert.equal(finalState.stages['implementation'].status, 'completed');
+    assert.equal(finalState.stages['owner-acceptance'].status, 'waiting_owner_approval');
 
     // verification.md 与 state 一致（FAIL 未写过 → 这是首次 PASS 写入，version 1，
     // 但 History 记录了 attempt 1 的 FAIL）
