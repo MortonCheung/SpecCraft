@@ -23,6 +23,9 @@ import {
   cmdTasksVerify,
   cmdTasksReopen,
   cmdExecute,
+  cmdWorkspacesList,
+  cmdWorkspacesShow,
+  cmdWorkspacesClean,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -90,6 +93,9 @@ function usage(): string {
     '  reject --reason <text>|--file    Owner 拒绝（重开 implementation，同 Run 返工）',
     '  handoff                          生成 Handoff Package（确定性交接）',
     '  validate                        校验状态一致性（不跳阶段）',
+    '  workspaces list                 列出 parallel Workspace（诊断）',
+    '  workspaces show <task-id>       查看某 Task 的完整 Workspace 证据',
+    '  workspaces clean                清理已成功 integration 的 Workspace 遗留内容',
   ].join('\n');
 }
 
@@ -148,7 +154,20 @@ async function main(): Promise<number> {
         return await cmdExecute({
           adapter: args.flags.adapter,
           freshSession: args.flags['fresh-session'] !== undefined,
+          parallel: args.flags.parallel !== undefined,
+          ...(args.flags['max-parallel'] !== undefined ? { maxParallel: args.flags['max-parallel'] as string } : {}),
         });
+      case 'workspaces': {
+        const sub = args.positionals[0];
+        if (sub === 'list') return await cmdWorkspacesList();
+        if (sub === 'show') {
+          const id = args.positionals[1];
+          if (!id) throw new Error('workspaces show 需要 task id：speccraft workspaces show <task-id>');
+          return await cmdWorkspacesShow(id);
+        }
+        if (sub === 'clean') return await cmdWorkspacesClean();
+        throw new Error('workspaces 需要 list | show | clean 子命令');
+      }
       case 'tasks': {
         const sub = args.positionals[0];
         if (sub === 'compile') return await cmdTasksCompile();

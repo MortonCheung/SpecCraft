@@ -89,6 +89,27 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
           for (const s of statuses.values()) count[s] = (count[s] ?? 0) + 1;
           console.log(`Tasks:`);
           console.log(`  total: ${graph.tasks.length}  ready: ${count.ready}  in_progress: ${count.in_progress}  completed: ${count.completed}  failed: ${count.failed}  blocked: ${count.blocked}  pending: ${count.pending}`);
+
+          // v0.6：Execution Mode + Parallel 摘要（§18，不打印历史 Workspace 明细）
+          const { listWaves, readWaveManifest } = await import('../core/workspaces/store.js');
+          const { listWorkspaceSummaries } = await import('../core/workspaces/diagnostics.js');
+          const waves = await listWaves(speccraftDir, run.id);
+          console.log(`  Execution Mode: ${waves.length > 0 ? 'parallel' : 'sequential'}`);
+          if (waves.length > 0) {
+            const latestWave = await readWaveManifest(speccraftDir, run.id, waves[waves.length - 1]);
+            if (latestWave) {
+              const running = !latestWave.finishedAt;
+              console.log(`  Parallel:`);
+              console.log(`    current wave: ${latestWave.wave}${running ? '（进行中）' : '（已结束）'}`);
+              console.log(`    max parallel: ${latestWave.maxParallel}`);
+            }
+            const summaries = await listWorkspaceSummaries(speccraftDir, run.id, graph);
+            const active = summaries.filter((s) => ['created', 'active', 'verified', 'committed'].includes(s.status)).length;
+            const pending = summaries.filter((s) => s.status === 'committed').length;
+            const conflict = summaries.filter((s) => s.status === 'integration_conflict').length;
+            console.log(`    active workspaces: ${active}`);
+            console.log(`    integration pending: ${pending}  conflict: ${conflict}`);
+          }
         }
       } catch {
         // 读取 tasks 失败不阻塞 status
@@ -116,7 +137,7 @@ export async function cmdNext(projectRoot: string = process.cwd()): Promise<void
   // 决策，不是 `speccraft approve` 的 design 审批，必须走 execution guidance。
   const ready = state.stages['ready-to-implement']?.status === 'completed';
   if (ready) {
-    const guidance = await nextExecutionGuidance(speccraftDir, state);
+    const guidance = await nextExecutionGuidance(projectRoot, speccraftDir, state);
     if (guidance) {
       console.log(guidance);
       return;
@@ -139,7 +160,7 @@ export async function cmdNext(projectRoot: string = process.cwd()): Promise<void
 }
 
 /** Execution 生命周期引导；返回 null 表示不在 execution 阶段 */
-async function nextExecutionGuidance(speccraftDir: string, state: State): Promise<string | null> {
+async function nextExecutionGuidance(projectRoot: string, speccraftDir: string, state: State): Promise<string | null> {
   const impl = state.stages['implementation']?.status ?? 'pending';
   const verif = state.stages['verification']?.status ?? 'pending';
   const acceptance = state.stages['owner-acceptance']?.status ?? 'pending';
@@ -172,7 +193,7 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
 
   // Task Graph 级下一步（有 task graph 且 implementation 未 completed 时优先）
   if (impl !== 'completed' && state.active_run) {
-    const taskGuidance = await taskGraphGuidance(speccraftDir, state.active_run);
+    const taskGuidance = await taskGraphGuidance(projectRoot, speccraftDir, state.active_run);
     if (taskGuidance) return taskGuidance;
   }
 
@@ -244,7 +265,7 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
 }
 
 /** Task Graph 级下一步引导；无 task graph 返回 null */
-async function taskGraphGuidance(speccraftDir: string, runId: string): Promise<string | null> {
+async function taskGraphGuidance(projectRoot: string, speccraftDir: string, runId: string): Promise<string | null> {
   const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
   const graph = await readTaskGraphOrNull(speccraftDir, runId);
   if (!graph) return null;
@@ -254,6 +275,19 @@ async function taskGraphGuidance(speccraftDir: string, runId: string): Promise<s
 
   if (hasFailedTask(statuses)) {
     const failed = graph.tasks.filter((t) => statuses.get(t.id) === 'failed').map((t) => t.id);
+    // v0.6 §19：integration conflict 单独提示（需人工 resolution/rework）
+    const { readWorkspaceDetail } = await import('../core/workspaces/diagnostics.js');
+    const conflicts: string[] = [];
+    for (const id of failed) {
+      const detail = await readWorkspaceDetail(speccraftDir, runId, id);
+      if (detail.some((m) => m.status === 'integration_conflict')) conflicts.push(id);
+    }
+    if (conflicts.length > 0) {
+      return [
+        `Task ${conflicts.join(', ')} integration conflict requires human resolution/rework.`,
+        `修复后：speccraft tasks reopen ${conflicts[0]}（下一次 execute 将使用新的 Workspace Attempt）`,
+      ].join('\n');
+    }
     return [
       `有 failed Task：${failed.join(', ')}`,
       `修复后：speccraft tasks reopen ${failed[0]} 或 speccraft dispatch --task ${failed[0]}`,
@@ -275,6 +309,31 @@ async function taskGraphGuidance(speccraftDir: string, runId: string): Promise<s
   }
   const next = firstReadyTask(graph, statuses);
   if (next) {
+    // v0.6 §19：多个 ready → 提示 parallel（含 scope 冲突 / canonical dirty 检查，只读不改 Git）
+    const readyTasks = graph.tasks.filter((t) => statuses.get(t.id) === 'ready');
+    if (readyTasks.length >= 2) {
+      const { planWave } = await import('../core/parallel/planner.js');
+      const plan = planWave({ graph, statuses, maxParallel: 2 });
+      const safe = plan.tasks.length;
+      const lines: string[] = [];
+      if (safe < readyTasks.length) {
+        lines.push(`${readyTasks.length} tasks ready, but only ${safe} are safe in the next wave.`);
+      } else {
+        lines.push(`${readyTasks.length} tasks are ready for parallel execution:`);
+      }
+      lines.push(...readyTasks.map((t) => `- ${t.id}`));
+      lines.push('', 'Run:', '  speccraft execute --parallel');
+      const { isCanonicalClean } = await import('../core/workspaces/integration.js');
+      if (projectRoot && !(await isCanonicalClean(projectRoot))) {
+        return [
+          'Parallel execution blocked:',
+          'canonical workspace has user changes.',
+          '',
+          '提交或清理后重试（speccraft next 不自动修改 Git）。',
+        ].join('\n');
+      }
+      return lines.join('\n');
+    }
     return [
       `Next: dispatch task ${next}`,
       `  speccraft dispatch --task ${next}（或 speccraft execute 自动顺序执行）`,
@@ -868,6 +927,133 @@ async function validateExecutionConsistency(speccraftDir: string, state: State):
   // ---- Task Graph 一致性（ADR 0006） ----
   violations.push(...(await checkTaskConsistency(speccraftDir, run.id)));
 
+  // ---- Workspace / Parallel 一致性（ADR 0007 §20） ----
+  violations.push(...(await checkWorkspaceConsistency(speccraftDir, run.id)));
+
+  return violations;
+}
+
+/** Workspace invariant（§20）：workspace ↔ task / attempt / branch / integration 一致性 */
+async function checkWorkspaceConsistency(speccraftDir: string, runId: string): Promise<string[]> {
+  const violations: string[] = [];
+  const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) return violations; // legacy Run 无 workspace
+
+  const { listWaves } = await import('../core/workspaces/store.js');
+  const waves = await listWaves(speccraftDir, runId);
+  const { listWorkspaceSummaries } = await import('../core/workspaces/diagnostics.js');
+  const summaries = await listWorkspaceSummaries(speccraftDir, runId, graph);
+  if (waves.length === 0 && summaries.length === 0) return violations; // sequential route
+
+  const manifests = await readAllTaskManifests(speccraftDir, runId);
+  const taskIds = graph.tasks.map((t) => t.id);
+  const seenRoots = new Map<string, string>();
+  const seenBranches = new Map<string, string>();
+  const integratedTasks = new Set<string>();
+
+  const byTask = new Map<string, typeof summaries>();
+  for (const s of summaries) {
+    if (!byTask.has(s.taskId)) byTask.set(s.taskId, []);
+    byTask.get(s.taskId)!.push(s);
+  }
+
+  for (const s of summaries) {
+    const label = `${s.taskId}/attempt-${String(s.attempt).padStart(3, '0')}`;
+    // active workspace ↔ task 存在
+    if (!taskIds.includes(s.taskId)) {
+      violations.push(`workspace ${label} 引用不存在的 task_id ${s.taskId}`);
+      continue;
+    }
+    // workspaceRoot / branch 唯一（parallel Task 不共享）
+    if (s.workspaceRoot) {
+      if (seenRoots.has(s.workspaceRoot)) {
+        violations.push(`workspace ${label} 与 ${seenRoots.get(s.workspaceRoot)} 共享 workspaceRoot：${s.workspaceRoot}`);
+      } else {
+        seenRoots.set(s.workspaceRoot, label);
+      }
+    }
+    if (s.branch) {
+      if (seenBranches.has(s.branch)) {
+        violations.push(`workspace ${label} 与 ${seenBranches.get(s.branch)} 共享 branch：${s.branch}`);
+      } else {
+        seenBranches.set(s.branch, label);
+      }
+    }
+    // base commit 字段合法
+    if (!/^[0-9a-f]{7,40}$/.test(s.baseCommit)) {
+      violations.push(`workspace ${label} 的 base_commit 非法：${s.baseCommit}`);
+    }
+    if (s.taskCommit && !/^[0-9a-f]{7,40}$/.test(s.taskCommit)) {
+      violations.push(`workspace ${label} 的 task_commit 非法：${s.taskCommit}`);
+    }
+    if (s.status === 'integrated' || s.status === 'cleaned') {
+      integratedTasks.add(s.taskId);
+      // Workspace integrated → Task 必须 completed
+      if (manifests.get(s.taskId)?.status !== 'completed') {
+        violations.push(`workspace ${label} 已 integrated，但 task ${s.taskId} 状态为 ${manifests.get(s.taskId)?.status ?? '?'}`);
+      }
+    }
+    if (s.status === 'integration_conflict') {
+      // integration_conflict → task 不得 completed
+      if (manifests.get(s.taskId)?.status === 'completed') {
+        violations.push(`workspace ${label} 为 integration_conflict，但 task ${s.taskId} 为 completed`);
+      }
+    }
+  }
+
+  // Task completed in parallel route → 必须存在 integrated workspace evidence
+  if (waves.length > 0) {
+    for (const t of graph.tasks) {
+      if (manifests.get(t.id)?.status === 'completed' && !integratedTasks.has(t.id)) {
+        violations.push(`task ${t.id} 在 parallel route 为 completed，但缺少 integrated workspace evidence`);
+      }
+    }
+  }
+
+  // workspace verified → task 不得已经 completed（除非 subsequently integrated）
+  for (const [taskId, list] of byTask) {
+    const hasIntegrated = list.some((s) => s.status === 'integrated' || s.status === 'cleaned');
+    const hasVerifiedOnly = list.some((s) => s.status === 'verified' || s.status === 'committed');
+    if (manifests.get(taskId)?.status === 'completed' && hasVerifiedOnly && !hasIntegrated) {
+      violations.push(`task ${taskId} 为 completed，但最新 workspace 仅 verified/committed（未 integration）`);
+    }
+  }
+
+  // dispatch attempt 的 workspace_attempt 必须对应实际 Workspace Attempt
+  const { listDispatchAttempts, readDispatchAttempt } = await import('../core/dispatch/store.js');
+  for (const a of await listDispatchAttempts(speccraftDir, runId)) {
+    const m = await readDispatchAttempt(speccraftDir, runId, a);
+    if (!m?.workspace_attempt || !m.task_id) continue;
+    const attempts = byTask.get(m.task_id)?.map((s) => s.attempt) ?? [];
+    if (!attempts.includes(m.workspace_attempt)) {
+      violations.push(`dispatch attempt ${a} 引用不存在的 workspace attempt：${m.task_id}/${m.workspace_attempt}`);
+    }
+    if (m.workspace_root && m.task_id) {
+      const list = byTask.get(m.task_id) ?? [];
+      if (!list.some((s) => s.workspaceRoot === m.workspace_root)) {
+        violations.push(`dispatch attempt ${a} 的 workspace_root 不匹配任何 workspace：${m.workspace_root}`);
+      }
+    }
+  }
+
+  // scope audit violations 非空 → workspace 不得 integrated
+  const { readWorkspaceDetail } = await import('../core/workspaces/diagnostics.js');
+  for (const t of graph.tasks) {
+    for (const m of await readWorkspaceDetail(speccraftDir, runId, t.id)) {
+      if (m.scopeAudit.violations.length > 0 && (m.status === 'integrated' || m.status === 'cleaned')) {
+        violations.push(`workspace ${t.id}/attempt-${String(m.attempt).padStart(3, '0')} 有 scope violations 却已 integrated`);
+      }
+      // workspace run_id / task_id 一致性
+      if (m.runId !== runId) {
+        violations.push(`workspace ${t.id}/attempt-${String(m.attempt).padStart(3, '0')} 的 run_id 不匹配：${m.runId}`);
+      }
+      if (m.taskId !== t.id) {
+        violations.push(`workspace 目录 task ${t.id} 下 manifest task_id 为 ${m.taskId}`);
+      }
+    }
+  }
+
   return violations;
 }
 
@@ -1235,9 +1421,111 @@ export async function cmdTasksReopen(
   }
 }
 
-/** speccraft execute：确定性顺序执行 Task Graph（单写者） */
+// ---------------------------------------------------------------------------
+// Workspaces CLI（v0.6 §15：只读诊断 + 成功 terminal 清理，无内部操作命令）
+// ---------------------------------------------------------------------------
+
+/** speccraft workspaces list */
+export async function cmdWorkspacesList(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraphOrNull } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) {
+    console.log('当前 Run 没有 Task Graph（legacy Run），无 Workspace。');
+    return 0;
+  }
+  const { listWorkspaceSummaries } = await import('../core/workspaces/diagnostics.js');
+  const summaries = await listWorkspaceSummaries(speccraftDir, runId, graph);
+  if (summaries.length === 0) {
+    console.log('无 Workspace（未执行过 parallel execute）。');
+    return 0;
+  }
+  console.log(`Workspaces（${summaries.length}）：`);
+  console.log(`  ${'Task'.padEnd(20)} ${'Attempt'.padEnd(8)} ${'Status'.padEnd(22)} Branch / Base / Task Commit / Workspace`);
+  for (const s of summaries) {
+    const commit = s.taskCommit ?? '-';
+    const short = (c: string, n: number) => (c === '-' ? '-' : c.slice(0, n));
+    console.log(
+      `  ${s.taskId.padEnd(20)} ${String(s.attempt).padEnd(8)} ${s.status.padEnd(22)} ${s.branch} | ${short(s.baseCommit, 10)} | ${short(commit, 10)} | ${s.workspaceRoot}`,
+    );
+  }
+  return 0;
+}
+
+/** speccraft workspaces show <task-id> */
+export async function cmdWorkspacesShow(taskId: string, projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraph } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraph(speccraftDir, runId);
+  const task = graph.tasks.find((t) => t.id === taskId);
+  if (!task) {
+    console.error(`Task 不存在：${taskId}`);
+    return 1;
+  }
+  const { readWorkspaceDetail } = await import('../core/workspaces/diagnostics.js');
+  const details = await readWorkspaceDetail(speccraftDir, runId, taskId);
+  if (details.length === 0) {
+    console.log(`Task ${taskId} 没有 Workspace（未执行过 parallel execute）。`);
+    return 0;
+  }
+  console.log(`Task: ${taskId}`);
+  for (const m of details) {
+    console.log('');
+    console.log(`  Workspace Attempt ${m.attempt}（${m.status}）`);
+    console.log(`    branch: ${m.branch}`);
+    console.log(`    base commit: ${m.baseCommit}`);
+    console.log(`    task commit: ${m.taskCommit ?? '（无）'}`);
+    console.log(`    integration commit: ${m.integrationCommit ?? '（无）'}`);
+    console.log(`    workspace: ${m.workspaceRoot}`);
+    // scope audit（§15.3）
+    console.log(`    scope audit: ${m.scopeAudit.passed ? 'PASS' : 'FAIL'}（declared [${m.scopeAudit.declared.join(', ') || '无'}]）`);
+    if (m.scopeAudit.violations.length > 0) {
+      console.log(`    scope violations: ${m.scopeAudit.violations.join(', ')}`);
+    }
+    console.log(`    dispatch attempts: [${m.dispatchAttempts.join(', ') || '无'}]`);
+    console.log(`    verification attempts: [${m.verificationAttempts.join(', ') || '无'}]`);
+    if (m.failurePhase) console.log(`    failure phase: ${m.failurePhase}`);
+    if (m.conflictingPaths?.length) console.log(`    conflicting paths: ${m.conflictingPaths.join(', ')}`);
+    if (m.lastError) console.log(`    last error: ${m.lastError}`);
+  }
+  return 0;
+}
+
+/** speccraft workspaces clean：只清理 integrated/cleaned 的遗留内容 */
+export async function cmdWorkspacesClean(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readTaskGraphOrNull } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) {
+    console.log('当前 Run 没有 Task Graph（legacy Run），无 Workspace。');
+    return 0;
+  }
+  const { cleanWorkspaces } = await import('../core/workspaces/diagnostics.js');
+  const result = await cleanWorkspaces(projectRoot, speccraftDir, runId, graph);
+
+  if (result.cleaned.length > 0) {
+    console.log(`已清理 ${result.cleaned.length} 个成功 Workspace：`);
+    for (const c of result.cleaned) console.log(`  - ${c}`);
+  } else {
+    console.log('没有可清理的成功 Workspace。');
+  }
+  if (result.skipped.length > 0) {
+    console.log(`跳过 ${result.skipped.length} 个非成功 Workspace（禁止删除）：`);
+    for (const s of result.skipped) {
+      console.log(`  - ${s.taskId}/attempt-${String(s.attempt).padStart(3, '0')}（${s.status}）`);
+    }
+  }
+  if (result.warnings.length > 0) {
+    console.log('警告：');
+    for (const w of result.warnings) console.log(`  - ${w}`);
+    return 1;
+  }
+  return 0;
+}
+
+/** speccraft execute：确定性顺序执行 Task Graph（单写者）；--parallel 走隔离并行路线 */
 export async function cmdExecute(
-  opts: { adapter?: string; freshSession?: boolean },
+  opts: { adapter?: string; freshSession?: boolean; parallel?: boolean; maxParallel?: string },
   projectRoot: string = process.cwd(),
 ): Promise<number> {
   const { state, speccraftDir } = await loadProject(projectRoot);
@@ -1277,6 +1565,53 @@ export async function cmdExecute(
     executionGuard = await readFile(path.join(skillsDir, 'execution-guard', 'SKILL.md'), 'utf8');
   } catch {
     executionGuard = '';
+  }
+
+  // --parallel：显式 opt-in（默认 sequential，保持 v0.5 行为）
+  if (opts.parallel) {
+    const { isValidMaxParallel, DEFAULT_MAX_PARALLEL } = await import('../core/parallel/types.js');
+    let maxParallel = DEFAULT_MAX_PARALLEL;
+    if (opts.maxParallel !== undefined) {
+      const n = Number(opts.maxParallel);
+      if (!isValidMaxParallel(n)) {
+        console.error('错误：--max-parallel 必须是 >= 1 的整数。');
+        return 1;
+      }
+      maxParallel = n;
+    }
+
+    const { executeParallelTaskGraph } = await import('../core/parallel/orchestrator.js');
+    const result = await executeParallelTaskGraph({
+      speccraftDir,
+      projectRoot,
+      runId,
+      adapter,
+      runContext,
+      executionGuard,
+      maxParallel,
+      freshSession: opts.freshSession === true,
+      ...(adapterConfig ? { adapterConfig } : {}),
+      ...(config.hooks ? { hooks: config.hooks } : {}),
+    });
+
+    if (!result.complete) {
+      console.error(`parallel execute 中止（${result.reason}），已完成 ${result.completed}/${graph.tasks.length} 个 Task。`);
+      if (result.reason === 'canonical_drift') {
+        console.error('canonical workspace 已漂移（用户在并行期间修改/commit）。工作区已保留，处理后重新执行。');
+      }
+      console.error(`waves：${result.waves}；执行过：${result.executed.join(', ') || '（无）'}`);
+      return 1;
+    }
+
+    console.log(`Task Graph 完成（parallel，${result.waves} 个 wave，${result.parallelTasks} 个并行 Task）。`);
+    for (const w of result.waveSummaries) {
+      console.log(`  wave-${String(w.wave).padStart(3, '0')}: ${w.tasks.join(' + ')}`);
+    }
+    console.log(`integration commits：${result.integrationCommits.length}`);
+    console.log(`已生成 Aggregate Report：${result.reportFile}`);
+    console.log('implementation = completed，Run = awaiting_verification');
+    console.log('下一步：speccraft verify');
+    return 0;
   }
 
   const { executeTaskGraph } = await import('../core/tasks/orchestrator.js');

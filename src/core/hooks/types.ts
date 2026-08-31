@@ -54,6 +54,12 @@ export interface HookEnvironment {
   SPECCRAFT_ACCEPTANCE_ATTEMPT?: string;
   SPECCRAFT_ADAPTER?: string;
   SPECCRAFT_TASK_ID?: string;
+  /** v0.6 parallel route：隔离 worktree 根目录 */
+  SPECCRAFT_WORKSPACE_ROOT?: string;
+  /** v0.6 parallel route：Workspace Attempt 序号 */
+  SPECCRAFT_WORKSPACE_ATTEMPT?: string;
+  /** v0.6 parallel route：当前 wave 序号 */
+  SPECCRAFT_WAVE?: string;
 }
 
 /** 单个 hook 的执行结果 */

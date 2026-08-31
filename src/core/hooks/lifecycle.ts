@@ -16,6 +16,8 @@ export interface HookContext {
   speccraftDir: string;
   runId?: string;
   env: HookEnvironment;
+  /** hook 命令执行 cwd（v0.6 parallel route = isolated workspaceRoot；省略用 projectRoot） */
+  workspaceRoot?: string;
 }
 
 /** 执行 before hook；返回 blocked=true 表示应中止主体操作 */
@@ -26,7 +28,7 @@ export async function runBeforeHooks(
 ): Promise<{ blocked: boolean; outcome?: RunHooksOutcome }> {
   const hooks = config?.[event];
   if (!hooks || hooks.length === 0) return { blocked: false };
-  const outcome = await runHooks({ ...ctx, event, hooks });
+  const outcome = await runHooks({ ...ctx, event, hooks, ...(ctx.workspaceRoot ? { workspaceRoot: ctx.workspaceRoot } : {}) });
   return { blocked: outcome.anyFailed, outcome };
 }
 
@@ -38,5 +40,5 @@ export async function runAfterHooks(
 ): Promise<RunHooksOutcome | null> {
   const hooks = config?.[event];
   if (!hooks || hooks.length === 0) return null;
-  return runHooks({ ...ctx, event, hooks });
+  return runHooks({ ...ctx, event, hooks, ...(ctx.workspaceRoot ? { workspaceRoot: ctx.workspaceRoot } : {}) });
 }
