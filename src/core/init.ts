@@ -41,6 +41,7 @@ export async function initProject(options: InitOptions): Promise<InitResult> {
   const projectName = options.projectName ?? path.basename(projectRoot);
 
   await mkdir(path.join(speccraftDir, 'artifacts'), { recursive: true });
+  await mkdir(path.join(speccraftDir, 'runs'), { recursive: true });
   await mkdir(path.join(speccraftDir, 'decisions'), { recursive: true });
   await mkdir(path.join(speccraftDir, 'logs'), { recursive: true });
 

@@ -41,7 +41,19 @@ export function parseState(source: string): State {
     }
   }
 
-  return { current_stage, stages };
+  return { current_stage, stages, ...parseActiveRun(obj) };
+}
+
+/**
+ * Legacy 兼容：active_run 为可选字段。
+ * 注意：active_run 的合法性（Run 是否真实存在）由 validate / prepare 流程检查，
+ * parseState 只负责不丢字段。
+ */
+function parseActiveRun(obj: Record<string, unknown>): { active_run?: string } {
+  if (typeof obj.active_run === 'string' && obj.active_run) {
+    return { active_run: obj.active_run };
+  }
+  return {};
 }
 
 /** 将 State 序列化为 state.yaml 文本 */

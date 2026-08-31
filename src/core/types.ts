@@ -101,10 +101,15 @@ export interface StageState {
   note?: string;
 }
 
-/** .speccraft/state.yaml 的运行时状态（见 ADR 0002 §8） */
+/** .speccraft/state.yaml 的运行时状态（见 ADR 0002 §8、ADR 0003 §4） */
 export interface State {
   current_stage: StageId;
   stages: Record<string, StageState>;
+  /**
+   * 当前活跃 Execution Run 的 id（ADR 0003 §4）。
+   * 旧 state.yaml 没有该字段时必须正常加载（可选字段，不做迁移）。
+   */
+  active_run?: string;
 }
 
 /** Artifact 的 YAML Frontmatter（见 ADR 0002 §6） */
