@@ -1,17 +1,23 @@
 /**
- * Scope Engine（ADR 0006 §6）。
+ * Scope Engine（ADR 0006 §6、ADR 0007 §10）。
  *
- * v0.5 不并行，但建立确定性 Scope model 供 v0.6 用。
- * 保守规则：无法证明两个 scope 不重叠就认为冲突，不自动猜。
+ * v0.5 只建立确定性 Scope model；v0.6 起它同时是并行安全边界。
+ * 因此去掉「basename 含 . 即文件」的不安全启发式，改为纯路径规则：
+ *   - `directory/**`（或 `directory/*`）→ 目录范围；
+ *   - 无 glob 后缀 → 精确路径。
+ *
+ * 保守原则：无法证明两个 scope 不重叠，一律视为冲突。
  */
 
-/** 归一化 scope path：./foo → foo，\ → / */
+import type { TaskScope } from './types.js';
+
+/** 归一化 scope path：./foo → foo，\ → /，去除空段与 . 段 */
 export function normalizeScopePath(p: string): string {
   const parts = p.trim().split(/[\\/]/).filter((s) => s.length > 0 && s !== '.');
   return parts.join('/');
 }
 
-/** 一个 scope 是否覆盖到 repo 内（拒绝绝对路径 / .. 已在 compiler 做，这里防御性再查） */
+/** 一个 scope 是否覆盖到 repo 内（拒绝绝对路径 / ..） */
 export function isValidScopePath(p: string): boolean {
   if (!p.trim()) return false;
   if (p.startsWith('/')) return false;
@@ -19,43 +25,56 @@ export function isValidScopePath(p: string): boolean {
   return !parts.includes('..');
 }
 
+/** 去掉尾部 /* 或 /** glob 后缀，得到目录/精确前缀 */
+function stripGlobSuffix(p: string): string {
+  return p.replace(/\/\*\*?$/, '');
+}
+
+/** 判断 scope path 是否为目录型（尾缀 /* 或 /**） */
+function isGlobDirectory(p: string): boolean {
+  return /\/\*\*?$/.test(p);
+}
+
 /**
- * 两个 scope 是否可能重叠（保守）。
- * - 相同即重叠；
- * - 一个为目录（无扩展名或尾部 /**），另一个在其下 → 重叠；
- * - 一个为文件，另一个为目录包含它 → 重叠；
- * - 无法证明不重叠 → 认为重叠（保守）。
+ * 两个 scope path 是否可能重叠（保守）。
+ * strip glob 后缀后：相等，或互为路径前缀（一方是另一方目录下）→ 视为重叠。
+ * 绝不依靠「扩展名」猜测文件/目录。
  */
 export function scopesOverlap(a: string, b: string): boolean {
   const na = normalizeScopePath(a);
   const nb = normalizeScopePath(b);
-  if (na === nb) return true;
+  const da = stripGlobSuffix(na);
+  const db = stripGlobSuffix(nb);
+  if (da === db) return true;
+  if (da.startsWith(db + '/') || db.startsWith(da + '/')) return true;
+  return false;
+}
 
-  // 目录判定：去掉尾部 /** 或判断是否有扩展名（简单启发式：含 . 视为文件）
-  const dirA = stripGlob(na);
-  const dirB = stripGlob(nb);
-  const isFileA = looksLikeFile(na);
-  const isFileB = looksLikeFile(nb);
-
-  // 目录-目录：一方是另一方前缀 → 重叠
-  if (!isFileA && !isFileB) {
-    return dirA.startsWith(dirB + '/') || dirB.startsWith(dirA + '/');
+/**
+ * 两个 Task 的 scope 是否兼容（所有 path pair 都能证明不重叠）。
+ * 只要存在一个重叠的 path pair 即返回 false（conflict）。
+ */
+export function scopesCompatible(a: TaskScope, b: TaskScope): boolean {
+  for (const pa of a.paths) {
+    for (const pb of b.paths) {
+      if (scopesOverlap(pa, pb)) return false;
+    }
   }
-  // 文件-文件：完全相同才重叠（上面已处理相同）
-  if (isFileA && isFileB) return false;
-  // 文件-目录：目录是文件的前缀 → 重叠
-  const file = isFileA ? dirA : dirB;
-  const dir = isFileA ? dirB : dirA;
-  return file.startsWith(dir + '/');
+  return true;
 }
 
-/** 去掉尾部 /** 与 * 通配 */
-function stripGlob(p: string): string {
-  return p.replace(/\/\*\*?$/, '').replace(/\/\*$/, '');
-}
-
-/** 简单启发式：含扩展名视为文件，否则目录 */
-function looksLikeFile(p: string): boolean {
-  const base = p.split('/').pop() ?? p;
-  return base.includes('.') && !base.endsWith('/**');
+/**
+ * 单个实际变更路径是否落在单个 declared scope path 内（保守 subset）。
+ * - 目录 scope（/* 或 /** 尾缀）：覆盖该目录本身及其下所有路径；
+ * - 精确 scope（无 glob）：只覆盖完全相等的路径（不猜测目录）。
+ */
+export function pathMatchesScope(actualPath: string, scopePath: string): boolean {
+  const na = normalizeScopePath(actualPath);
+  const ns = normalizeScopePath(scopePath);
+  if (!na) return false;
+  if (isGlobDirectory(ns)) {
+    const dir = stripGlobSuffix(ns);
+    return na === dir || na.startsWith(dir + '/');
+  }
+  return na === ns;
 }

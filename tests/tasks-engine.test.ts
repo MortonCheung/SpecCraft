@@ -15,7 +15,13 @@ import {
   allCompleted,
   blockedReason,
 } from '../src/core/tasks/dependency.js';
-import { normalizeScopePath, isValidScopePath, scopesOverlap } from '../src/core/tasks/scope.js';
+import {
+  normalizeScopePath,
+  isValidScopePath,
+  scopesOverlap,
+  scopesCompatible,
+  pathMatchesScope,
+} from '../src/core/tasks/scope.js';
 import { renderTaskPrompt, renderTaskContext, generateTaskPackage } from '../src/core/tasks/package.js';
 import type { TaskGraph, TaskManifest } from '../src/core/tasks/types.js';
 
@@ -123,6 +129,36 @@ test('M5.3：scope normalize / validate / overlap 保守规则', () => {
   assert.equal(scopesOverlap('src/a', 'src/a'), true);
   // 文件 vs 目录（文件在目录下）重叠
   assert.equal(scopesOverlap('src/a.ts', 'src/**'), true);
+});
+
+test('M6.3：scopesCompatible 路径规则（保守）', () => {
+  const s = (paths: string[]) => ({ paths });
+  // §23.3：不同目录兼容
+  assert.equal(scopesCompatible(s(['src/a/**']), s(['src/b/**'])), true);
+  // src/** 覆盖 src/a/** → 冲突
+  assert.equal(scopesCompatible(s(['src/**']), s(['src/a/**'])), false);
+  // shared 父目录 vs shared 子目录 → 冲突
+  assert.equal(scopesCompatible(s(['src/shared/**']), s(['src/shared/config/**'])), false);
+  // 精确文件 A vs 精确文件 B → 兼容
+  assert.equal(scopesCompatible(s(['src/a.ts']), s(['src/b.ts'])), true);
+  // 精确文件相同 → 冲突
+  assert.equal(scopesCompatible(s(['src/a.ts']), s(['src/a.ts'])), false);
+  // 多 path：任一 pair 冲突则整体冲突
+  assert.equal(scopesCompatible(s(['src/a/**', 'src/x/**']), s(['src/b/**', 'src/x/y.ts'])), false);
+});
+
+test('M6.3：pathMatchesScope 目录 vs 精确路径', () => {
+  // 目录 scope 覆盖其下所有路径
+  assert.equal(pathMatchesScope('src/a/x.ts', 'src/a/**'), true);
+  // 目录 scope 覆盖目录本身
+  assert.equal(pathMatchesScope('src/a', 'src/a/**'), true);
+  // 精确 scope 只覆盖完全相等
+  assert.equal(pathMatchesScope('src/a/x.ts', 'src/a/x.ts'), true);
+  assert.equal(pathMatchesScope('src/a/x.ts', 'src/a/y.ts'), false);
+  // 精确 scope 不猜测目录
+  assert.equal(pathMatchesScope('src/a/x.ts', 'src/a'), false);
+  // 不在目录下
+  assert.equal(pathMatchesScope('src/b/x.ts', 'src/a/**'), false);
 });
 
 test('M5.3：generateTaskPackage 生成 context.md + prompt.md', async () => {
