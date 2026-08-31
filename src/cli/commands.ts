@@ -1531,6 +1531,97 @@ export async function cmdWorkspacesClean(projectRoot: string = process.cwd()): P
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Executor CLI（v0.7，ADR 0008 §28）
+// ---------------------------------------------------------------------------
+
+/** speccraft executors list：读取 project.yaml 列出 Executor Profile */
+export async function cmdExecutorsList(projectRoot: string = process.cwd()): Promise<number> {
+  const { loadProject, loadProjectConfig } = await import('../core/project.js');
+  const { speccraftDir } = await loadProject(projectRoot);
+  const config = await loadProjectConfig(speccraftDir);
+  const executors = config.execution?.executors ?? {};
+  const defaultExecutor = config.execution?.defaultExecutor;
+
+  console.log('Executors:');
+  if (Object.keys(executors).length === 0) {
+    console.log('  （无 executors 配置 —— legacy 模式，运行时使用 legacy-default）');
+    return 0;
+  }
+  console.log(`  default_executor: ${defaultExecutor ?? '（未配置）'}`);
+  console.log(`  ${'Executor'.padEnd(13)} ${'Adapter'.padEnd(10)} ${'Model'.padEnd(14)} Max Concurrency`);
+  for (const [id, p] of Object.entries(executors)) {
+    console.log(
+      `  ${id.padEnd(13)} ${p.adapter.padEnd(10)} ${(p.model ?? '-').padEnd(14)} ${
+        p.maxConcurrency ?? 'unlimited'
+      }`,
+    );
+  }
+  return 0;
+}
+
+/** speccraft executors plan：读取当前 Run 的 frozen plan.yaml */
+export async function cmdExecutorsPlan(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+  const plan = await readExecutorPlanOrNull(speccraftDir, runId);
+  if (!plan) {
+    console.log('当前 Run 没有 Executor Plan（请先 speccraft tasks compile）。');
+    return 1;
+  }
+  console.log(`Executor Plan（run ${runId}，default_executor: ${plan.defaultExecutor}）：`);
+  console.log(`  ${'Task'.padEnd(13)} ${'Executor'.padEnd(13)} ${'Adapter'.padEnd(10)} ${'Source'.padEnd(8)} Concurrency`);
+  for (const a of plan.assignments) {
+    console.log(
+      `  ${a.taskId.padEnd(13)} ${a.executor.padEnd(13)} ${a.adapter.padEnd(10)} ${a.source.padEnd(8)} ${
+        a.maxConcurrency ?? 'unlimited'
+      }`,
+    );
+  }
+  return 0;
+}
+
+/** speccraft executors doctor：probe Plan 实际需要的 adapter（去重，不按 Task） */
+export async function cmdExecutorsDoctor(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+  const plan = await readExecutorPlanOrNull(speccraftDir, runId);
+  if (!plan) {
+    console.log('当前 Run 没有 Executor Plan（请先 speccraft tasks compile）。');
+    return 1;
+  }
+  const { collectExecutorDiagnostics } = await import('../core/executors/diagnostics.js');
+  const diag = await collectExecutorDiagnostics(plan);
+
+  console.log(`Executor Doctor（run ${runId}，${diag.adapters.length} 个 adapter）：`);
+  for (const d of diag.adapters) {
+    if (!d.registered) {
+      console.log(`  adapter ${d.adapter}: unknown（未注册）`);
+    } else if (d.installed) {
+      console.log(
+        `  adapter ${d.adapter}: installed${d.version ? ` (${d.version})` : ''}${
+          d.binary ? ` binary=${d.binary}` : ''
+        }`,
+      );
+    } else {
+      console.log(`  adapter ${d.adapter}: NOT installed${d.error ? ` — ${d.error}` : ''}`);
+    }
+    console.log(`    used by: ${d.usedBy.join(', ')}`);
+    if (!d.capabilityOk) {
+      console.log(`    capability mismatch: model "${d.modelRequested}" not supported`);
+    }
+  }
+  if (diag.blocked.length > 0) {
+    console.log(`\npreflight blocked（${diag.blocked.length}）：`);
+    for (const b of diag.blocked) {
+      console.log(`  task ${b.taskId} / ${b.executor} → ${b.adapter}: ${b.reason}`);
+    }
+    return 1;
+  }
+  console.log('\npreflight PASS');
+  return 0;
+}
+
 /** speccraft execute：确定性顺序执行 Task Graph（单写者）；--parallel 走隔离并行路线 */
 export async function cmdExecute(
   opts: { adapter?: string; freshSession?: boolean; parallel?: boolean; maxParallel?: string },

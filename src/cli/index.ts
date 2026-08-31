@@ -26,6 +26,9 @@ import {
   cmdWorkspacesList,
   cmdWorkspacesShow,
   cmdWorkspacesClean,
+  cmdExecutorsList,
+  cmdExecutorsPlan,
+  cmdExecutorsDoctor,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -96,6 +99,9 @@ function usage(): string {
     '  workspaces list                 列出 parallel Workspace（诊断）',
     '  workspaces show <task-id>       查看某 Task 的完整 Workspace 证据',
     '  workspaces clean                清理已成功 integration 的 Workspace 遗留内容',
+    '  executors list                  列出 Executor Profile（project.yaml）',
+    '  executors plan                  查看当前 Run 的 frozen Executor Plan',
+    '  executors doctor                probe Executor Plan 需要的 adapter（去重）',
   ].join('\n');
 }
 
@@ -201,6 +207,13 @@ async function main(): Promise<number> {
           return 0;
         }
         throw new Error('implement 需要 start 或 finish 子命令');
+      }
+      case 'executors': {
+        const sub = args.positionals[0];
+        if (sub === 'list') return await cmdExecutorsList();
+        if (sub === 'plan') return await cmdExecutorsPlan();
+        if (sub === 'doctor') return await cmdExecutorsDoctor();
+        throw new Error('executors 需要 list | plan | doctor 子命令');
       }
       case 'verify':
         return await cmdVerify();
