@@ -14,50 +14,51 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 ## 当前开发阶段
 
-**v0.3 — Acceptance & Handoff Runtime**
+**v0.4 — Agent Adapter & Hook Runtime**
 
-已实现（v0.1 → v0.3 累计）：
+已实现（v0.1 → v0.4 累计）：
 
-- 声明式 16 阶段 Workflow（`schemas/default-workflow.yaml`），
-  阶段推进、门禁（gate）、`auto_complete` 全部由声明决定；
-- `.speccraft` 文件优先工作现场：workflow / state / artifacts / runs /
-  handoffs，无数据库；
-- Context Compiler：按 workflow dependency graph 编译上游上下文；
-- Execution Run：`speccraft prepare` 把已批准的 Execution Manual 编译成
-  可直接交给任意施工 Agent 的 Execution Package；
-- Verification Runtime：`speccraft verify` 执行目标项目声明的验证命令；
-- Owner Acceptance：`speccraft accept` / `speccraft reject`（人类验收权威，
-  与机器验证严格区分）；
-- Handoff Runtime：`speccraft handoff` 确定性编译可交接的 Handoff Package；
-- 不依赖任何特定 AI 厂商（Claude / Codex / Trae / OpenCode）。
+- 声明式 16 阶段 Workflow、`.speccraft` 文件优先工作现场（无数据库）；
+- Context Compiler、Execution Run、Verification / Owner Acceptance / Handoff Runtime；
+- **Adapter Runtime**：`manual` + `codex` / `claude` / `opencode` / `trae`
+  CLI Adapter，连接用户本机已安装的 CLI Agent；
+- **Dispatch Runtime**：append-only Dispatch Attempt，归一化执行证据；
+- **Hook Runtime**：生命周期 before/after hook（blocking / non-rollback）；
+- SpecCraft Core 不依赖任何特定 AI 厂商；Provider-specific 能力以可选
+  CLI Adapter 存在。
 
 尚未实现（后续版本）：多 Agent 编排、SaaS 后端、Web 控制台、云同步、
-具体 Agent 平台 API 集成等。
+Provider SDK / API-key 管理。
 
 ## CLI
 
 ```bash
 speccraft init [projectRoot] [--force]     # 初始化工作现场
-speccraft status                           # 阶段 / Run / Acceptance / Handoff
-speccraft next                             # 下一步引导（含 Acceptance 生命周期）
+speccraft status                           # 阶段 / Run / Dispatch / Acceptance / Handoff
+speccraft next                             # 下一步引导（含自动施工路线）
 speccraft approve <stage> [--by <who>]     # Owner 批准（硬门禁）
 speccraft artifact <stage>                 # 生成阶段 artifact 并推进
-speccraft prepare [--adapter manual]       # 编译 Execution Package + 创建 Run
-speccraft implement start [--run <id>]     # 显式开始施工
+speccraft prepare [--adapter <id>]         # 编译 Execution Package + 创建 Run
+speccraft implement start [--run <id>]     # 显式开始施工（manual 路线）
 speccraft implement finish --report <path> # 显式结束施工（提交报告）
+speccraft adapters list                    # 列出全部 adapter
+speccraft adapters doctor [id]             # 本机 Provider 能力诊断
+speccraft dispatch [--adapter <id>] [--run <id>] [--fresh-session]
+                                           # 调用本地 CLI Agent 自动施工
 speccraft verify                           # 运行项目验证命令（PASS/FAIL）
 speccraft accept [--note|--file] [--by]    # Owner 验收通过
 speccraft reject --reason <text>|--file    # Owner 拒绝（同 Run 返工）
 speccraft handoff                          # 生成 Handoff Package
-speccraft validate                         # 状态/execution/acceptance 一致性检查
+speccraft validate                         # 状态/execution/acceptance/dispatch 一致性检查
 ```
 
 ## 完整生命周期
 
 ```
 IDEA → ... → READY_TO_IMPLEMENT
-      ↓ speccraft prepare
-      ↓ speccraft implement start / finish --report
+      ↓ speccraft prepare（--adapter manual | codex | claude | opencode | trae）
+      ↓ manual 路线：implement start / finish --report
+      ↓ 自动路线：speccraft dispatch（调用本地 CLI Agent）
       ↓ speccraft verify
 VERIFICATION PASS（机器验证通过）
       ↓
@@ -66,6 +67,32 @@ OWNER ACCEPTANCE（人类验收）
       ↓
 HANDOFF（确定性交接）
 ```
+
+## Agent Adapters
+
+SpecCraft Core 不依赖任何特定 AI 厂商；Provider-specific 能力以可选 CLI
+Adapter 存在（只连接本机已安装的 CLI Agent，不管理 API Key / Token）。
+
+```bash
+speccraft prepare --adapter codex
+speccraft dispatch            # 自动施工 + 归一化证据
+```
+
+详见 [docs/agent-adapters.md](docs/agent-adapters.md)。
+
+## Hooks
+
+生命周期 before/after hook（before 失败则主体不执行；after 失败不倒滚）：
+
+```yaml
+hooks:
+  before_dispatch:
+    - id: require-clean-worktree
+      command: git diff --quiet
+      timeout_seconds: 30
+```
+
+详见 [docs/hooks.md](docs/hooks.md)。
 
 ## Verification vs Acceptance
 
@@ -101,7 +128,7 @@ speccraft handoff   # 生成 .speccraft/handoffs/handoff-001/
 ## 核心 Workflow
 
 见 [docs/workflow/core-workflow.md](docs/workflow/core-workflow.md)。
-架构决策见 [docs/decisions/](docs/decisions/)（ADR 0002/0003/0004）。
+架构决策见 [docs/decisions/](docs/decisions/)（ADR 0002/0003/0004/0005）。
 
 ## Inspirations / Research Targets
 
@@ -118,10 +145,11 @@ speccraft handoff   # 生成 .speccraft/handoffs/handoff-001/
 
 本仓库当前 **未达到 Production Ready**。
 
-v0.3 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
-Verification Runtime、Owner Acceptance、Handoff Runtime 与一个 `manual`
-Adapter。尚未实现：多 Agent 编排、具体 Agent 平台（Claude / Codex / Trae
-等）的 API 集成、SaaS 后端、Web 控制台、云同步。
+v0.4 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
+Verification / Owner Acceptance / Handoff Runtime、Adapter Runtime
+（manual + codex/claude/opencode/trae CLI Adapter）、Dispatch Runtime 与
+Hook Runtime。尚未实现：多 Agent 编排、SaaS 后端、Web 控制台、云同步、
+Provider SDK / API-key 管理。
 
 ## License
 
