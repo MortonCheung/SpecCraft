@@ -17,7 +17,8 @@ import {
   readArtifact,
 } from '../core/artifacts/store.js';
 import { resolveTemplateContent } from '../core/templates/resolver.js';
-import type { StageDefinition, StageStatus, State } from '../core/types.js';
+import { DEFAULT_STAGE_IDS } from '../core/types.js';
+import type { StageDefinition, StageStatus, State, Workflow } from '../core/types.js';
 
 const STATUS_WIDTH = 22;
 
@@ -109,6 +110,41 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
             const conflict = summaries.filter((s) => s.status === 'integration_conflict').length;
             console.log(`    active workspaces: ${active}`);
             console.log(`    integration pending: ${pending}  conflict: ${conflict}`);
+          }
+
+          // v0.7 §52：Executors / Assignments（有 frozen Executor Plan 时；不打印历史 dispatch）
+          const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+          const executorPlan = await readExecutorPlanOrNull(speccraftDir, run.id);
+          if (executorPlan) {
+            console.log('Executors:');
+            const seenExecutors = new Set<string>();
+            for (const a of executorPlan.assignments) {
+              if (!seenExecutors.has(a.executor)) {
+                seenExecutors.add(a.executor);
+                console.log(`  ${a.executor} → ${a.adapter}`);
+              }
+            }
+            console.log('Assignments:');
+            console.log(`  ${executorPlan.assignments.length} tasks`);
+            console.log(`  ${new Set(executorPlan.assignments.map((a) => a.executor)).size} executors`);
+            console.log(`  ${new Set(executorPlan.assignments.map((a) => a.adapter)).size} adapters`);
+            // Parallel mode：active executor capacity（§52，按 Wave 中未 finished 的 executor 统计）
+            if (waves.length > 0) {
+              const activeByExecutor = new Map<string, number>();
+              for (const [taskId, s] of statuses) {
+                if (s !== 'in_progress') continue;
+                const a = executorPlan.assignments.find((x) => x.taskId === taskId);
+                if (a) activeByExecutor.set(a.executor, (activeByExecutor.get(a.executor) ?? 0) + 1);
+              }
+              if (activeByExecutor.size > 0) {
+                const capByExecutor = new Map(executorPlan.assignments.map((a) => [a.executor, a.maxConcurrency]));
+                console.log('  active executor capacity:');
+                for (const [ex, n] of [...activeByExecutor.entries()].sort()) {
+                  const cap = capByExecutor.get(ex);
+                  console.log(`    ${ex}: ${n}/${cap ?? '∞'}`);
+                }
+              }
+            }
           }
         }
       } catch {
@@ -273,8 +309,24 @@ async function taskGraphGuidance(projectRoot: string, speccraftDir: string, runI
   const { refreshStates, firstReadyTask, hasFailedTask, allCompleted } = await import('../core/tasks/dependency.js');
   const statuses = refreshStates(graph, manifests);
 
+  // v0.7 §54：Executor Plan 未生成 / Adapter unavailable 引导（只读，不修改 Git / 状态）
+  const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+  const executorPlan = await readExecutorPlanOrNull(speccraftDir, runId);
+  const hasExplicitExecutor = graph.tasks.some((t) => t.executor !== undefined);
+  if (hasExplicitExecutor && !executorPlan) {
+    return 'Compile Task Graph / Executor Plan first.';
+  }
+  const blockedByTask = new Map<string, { executor: string; adapter: string }>();
+  if (executorPlan) {
+    const { collectExecutorDiagnostics } = await import('../core/executors/diagnostics.js');
+    const diag = await collectExecutorDiagnostics(executorPlan);
+    for (const b of diag.blocked) blockedByTask.set(b.taskId, { executor: b.executor, adapter: b.adapter });
+  }
+
   if (hasFailedTask(statuses)) {
     const failed = graph.tasks.filter((t) => statuses.get(t.id) === 'failed').map((t) => t.id);
+    const blockedFailed = failed.map((id) => blockedByTask.get(id)).find((b) => b);
+    if (blockedFailed) return executorBlockedMessage(blockedFailed);
     // v0.6 §19：integration conflict 单独提示（需人工 resolution/rework）
     const { readWorkspaceDetail } = await import('../core/workspaces/diagnostics.js');
     const conflicts: string[] = [];
@@ -312,6 +364,9 @@ async function taskGraphGuidance(projectRoot: string, speccraftDir: string, runI
     // v0.6 §19：多个 ready → 提示 parallel（含 scope 冲突 / canonical dirty 检查，只读不改 Git）
     const readyTasks = graph.tasks.filter((t) => statuses.get(t.id) === 'ready');
     if (readyTasks.length >= 2) {
+      // v0.7 §54：任一 ready Task 的 executor adapter 不可用 → 提示 doctor
+      const blockedReady = readyTasks.map((t) => blockedByTask.get(t.id)).find((b) => b);
+      if (blockedReady) return executorBlockedMessage(blockedReady);
       const { planWave } = await import('../core/parallel/planner.js');
       const plan = planWave({ graph, statuses, maxParallel: 2 });
       const safe = plan.tasks.length;
@@ -334,12 +389,25 @@ async function taskGraphGuidance(projectRoot: string, speccraftDir: string, runI
       }
       return lines.join('\n');
     }
+    const blockedNext = blockedByTask.get(next);
+    if (blockedNext) return executorBlockedMessage(blockedNext);
     return [
       `Next: dispatch task ${next}`,
       `  speccraft dispatch --task ${next}（或 speccraft execute 自动顺序执行）`,
     ].join('\n');
   }
   return 'Task Graph：无 ready Task（可能全部 pending/blocked）。';
+}
+
+/** v0.7 §54：executor adapter 不可用时的 next 引导 */
+function executorBlockedMessage(blocked: { executor: string; adapter: string }): string {
+  return [
+    'Execution blocked:',
+    `executor ${blocked.executor} requires unavailable adapter ${blocked.adapter}.`,
+    '',
+    'Run:',
+    'speccraft executors doctor',
+  ].join('\n');
 }
 
 /** speccraft approve <stage> [--by <who>] */
@@ -646,6 +714,30 @@ export async function cmdDispatch(
       console.error(`错误：Task 不存在：${opts.task}`);
       return 1;
     }
+    // v0.7 §40：Explicit Executor Graph 禁止 --adapter 覆盖（与 cmdExecute 一致）
+    const hasExplicitExecutor = graph.tasks.some((t) => t.executor !== undefined);
+    if (opts.adapter && hasExplicitExecutor) {
+      console.error('错误：--adapter cannot override explicit Task Executor assignments');
+      return 1;
+    }
+    // v0.7 §51 hooks：frozen plan.yaml → ExecutorResolver（ADR 0008 §38），注入 executor 信息
+    let resolvedAdapter = adapter;
+    let resolvedAdapterConfig = adapterConfig;
+    let executorProfile: string | undefined;
+    const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+    const { buildExecutorResolver } = await import('../core/executors/resolver.js');
+    const executorPlan = opts.adapter ? null : await readExecutorPlanOrNull(speccraftDir, run.id);
+    if (executorPlan) {
+      try {
+        const r = buildExecutorResolver({ plan: executorPlan }).resolve(opts.task);
+        resolvedAdapter = r.adapter;
+        resolvedAdapterConfig = r.adapterConfig;
+        executorProfile = r.executorId;
+      } catch (err) {
+        console.error(`错误：${err instanceof Error ? err.message : String(err)}`);
+        return 1;
+      }
+    }
     const runContextPath = path.join(speccraftDir, 'runs', run.id, 'context.md');
     let runContext = '';
     try {
@@ -661,7 +753,7 @@ export async function cmdDispatch(
       executionGuard = '';
     }
 
-    // before_dispatch hook（blocking，含 SPECCRAFT_TASK_ID）
+    // before_dispatch hook（blocking，含 SPECCRAFT_TASK_ID / SPECCRAFT_EXECUTOR_PROFILE）
     const taskHookCtx = {
       projectRoot,
       speccraftDir,
@@ -671,8 +763,9 @@ export async function cmdDispatch(
         SPECCRAFT_PROJECT_ROOT: projectRoot,
         SPECCRAFT_DIR: speccraftDir,
         SPECCRAFT_STAGE: 'implementation',
-        SPECCRAFT_ADAPTER: adapter.id,
+        SPECCRAFT_ADAPTER: resolvedAdapter.id,
         SPECCRAFT_TASK_ID: opts.task,
+        ...(executorProfile ? { SPECCRAFT_EXECUTOR_PROFILE: executorProfile } : {}),
       },
     };
     const { runBeforeHooks, runAfterHooks } = await import('../core/hooks/lifecycle.js');
@@ -687,11 +780,12 @@ export async function cmdDispatch(
       projectRoot,
       runId: run.id,
       taskId: opts.task,
-      adapter,
+      adapter: resolvedAdapter,
       runContext,
       executionGuard,
       freshSession: opts.freshSession === true,
-      ...(adapterConfig ? { adapterConfig } : {}),
+      ...(resolvedAdapterConfig ? { adapterConfig: resolvedAdapterConfig } : {}),
+      ...(executorProfile ? { executorProfile } : {}),
     });
 
     await runAfterHooks(
@@ -770,7 +864,9 @@ export async function cmdDispatch(
 export async function cmdValidate(projectRoot: string = process.cwd()): Promise<number> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
   const violations = validateState(workflow, state);
-  violations.push(...(await validateExecutionConsistency(speccraftDir, state)));
+  violations.push(...(await validateExecutionConsistency(speccraftDir, state, workflow)));
+  // v0.7 §55：16 Workflow Stages unchanged（不变量）
+  violations.push(...checkWorkflowStagesInvariant(workflow));
   console.log(`Workflow：${workflow.name} v${workflow.version}（${workflow.stages.length} 阶段）`);
   console.log(`当前阶段：${state.current_stage}`);
   if (violations.length === 0) {
@@ -786,7 +882,11 @@ export async function cmdValidate(projectRoot: string = process.cwd()): Promise<
  * Execution 一致性检查（ADR 0003 §7）。
  * 只检查 Run / State / Attempt 之间的矛盾，不替代 speccraft verify。
  */
-async function validateExecutionConsistency(speccraftDir: string, state: State): Promise<string[]> {
+async function validateExecutionConsistency(
+  speccraftDir: string,
+  state: State,
+  workflow: Workflow,
+): Promise<string[]> {
   const violations: string[] = [];
   const impl = state.stages['implementation']?.status ?? 'pending';
   const verif = state.stages['verification']?.status ?? 'pending';
@@ -929,6 +1029,187 @@ async function validateExecutionConsistency(speccraftDir: string, state: State):
 
   // ---- Workspace / Parallel 一致性（ADR 0007 §20） ----
   violations.push(...(await checkWorkspaceConsistency(speccraftDir, run.id)));
+
+  // ---- Executor Plan 一致性（v0.7 §55：Executor invariants） ----
+  violations.push(...(await checkExecutorPlanConsistency(speccraftDir, run.id)));
+
+  return violations;
+}
+
+/** v0.7 §55：16 Workflow Stages unchanged（不变量） */
+function checkWorkflowStagesInvariant(workflow: Workflow): string[] {
+  const stageIds = workflow.stages.map((s) => s.id);
+  if (stageIds.length !== DEFAULT_STAGE_IDS.length) {
+    return [`16 Workflow Stages unchanged 违规：workflow 有 ${stageIds.length} 个阶段，预期 ${DEFAULT_STAGE_IDS.length}`];
+  }
+  for (let i = 0; i < DEFAULT_STAGE_IDS.length; i++) {
+    if (stageIds[i] !== DEFAULT_STAGE_IDS[i]) {
+      return [
+        `16 Workflow Stages unchanged 违规：第 ${i + 1} 个阶段为 "${stageIds[i]}"，预期 "${DEFAULT_STAGE_IDS[i]}"`,
+      ];
+    }
+  }
+  return [];
+}
+
+/**
+ * Executor Plan 一致性（v0.7 §55）。
+ *
+ * 只读 frozen plan.yaml / task graph / workspace manifests / dispatch attempts，
+ * 不修改任何状态。legacy Run（无 Executor Plan）跳过大部分校验。
+ */
+async function checkExecutorPlanConsistency(
+  speccraftDir: string,
+  runId: string,
+): Promise<string[]> {
+  const violations: string[] = [];
+  const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+  const { readTaskGraphOrNull } = await import('../core/tasks/store.js');
+  const { isValidExecutorId } = await import('../core/executors/resolver.js');
+  const { LEGACY_EXECUTOR_ID } = await import('../core/executors/types.js');
+  const { loadProjectConfig } = await import('../core/project.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  const plan = await readExecutorPlanOrNull(speccraftDir, runId);
+
+  if (!plan) {
+    // 无 Executor Plan：Explicit Executor Graph 必须已 compile（其余 legacy 兼容跳过）
+    if (graph && graph.tasks.some((t) => t.executor !== undefined)) {
+      violations.push('graph 声明了 explicit task.executor，但缺少 Executor Plan（请先 speccraft tasks compile）');
+    }
+    return violations;
+  }
+
+  // 1. Executor Plan run_id == Run ID
+  if (plan.runId !== runId) {
+    violations.push(`Executor Plan run_id ${plan.runId} 不匹配 Run ID ${runId}`);
+  }
+
+  // 2. 每个 Task 恰好一个 assignment（无重复 taskId）
+  const seenTask = new Set<string>();
+  for (const a of plan.assignments) {
+    if (seenTask.has(a.taskId)) {
+      violations.push(`Executor Plan 中 task ${a.taskId} 出现多个 assignment`);
+    }
+    seenTask.add(a.taskId);
+  }
+
+  if (!graph) {
+    // 有 plan 但无 Task Graph：run 无 graph（异常态，但图相关校验无法进行）
+    return violations;
+  }
+  const graphIds = graph.tasks.map((t) => t.id);
+
+  // 3. assignment Task 必须存在
+  for (const a of plan.assignments) {
+    if (!graphIds.includes(a.taskId)) {
+      violations.push(`Executor assignment 引用不存在的 task：${a.taskId}`);
+    }
+  }
+
+  // 4. graph Task 必须有 assignment
+  const byTask = new Map(plan.assignments.map((a) => [a.taskId, a]));
+  for (const t of graph.tasks) {
+    if (!byTask.has(t.id)) {
+      violations.push(`Task ${t.id} 缺少 Executor assignment`);
+    }
+  }
+
+  const config = await loadProjectConfig(speccraftDir);
+  const executors = config.execution?.executors ?? {};
+  const adapters = config.execution?.adapters ?? {};
+  const defaultAdapter = config.execution?.defaultAdapter ?? 'manual';
+
+  // 5. explicit task.executor == assignment.executor
+  // 13. unknown executor → invalid
+  for (const t of graph.tasks) {
+    const a = byTask.get(t.id);
+    if (t.executor !== undefined && a && a.executor !== t.executor) {
+      violations.push(`Task ${t.id} 显式 executor "${t.executor}" 不匹配 assignment executor "${a.executor}"`);
+    }
+    if (!isValidExecutorId(t.id)) continue;
+    if (t.executor !== undefined && !isValidExecutorId(t.executor)) {
+      violations.push(`unknown executor → invalid：task ${t.id} 的 executor "${t.executor}"`);
+    }
+  }
+
+  // 6. assignment executor 必须存在（config.execution.executors 或 legacy-default）
+  for (const a of plan.assignments) {
+    if (a.executor === LEGACY_EXECUTOR_ID) continue; // legacy 逻辑 profile
+    if (!executors[a.executor]) {
+      violations.push(`assignment executor ${a.executor}（task ${a.taskId}）不存在于 project.yaml execution.executors`);
+    }
+  }
+
+  // 7. assignment adapter 必须存在（config.execution.adapters 或 legacy default_adapter）
+  for (const a of plan.assignments) {
+    const known = a.adapter === defaultAdapter || adapters[a.adapter] !== undefined;
+    if (!known) {
+      violations.push(`assignment adapter ${a.adapter}（task ${a.taskId}）不存在于 project.yaml execution.adapters`);
+    }
+  }
+
+  // 8. workspace.executor_profile == assignment.executor（遍历 workspace manifests）
+  const { listWorkspaceAttempts, readWorkspace } = await import('../core/workspaces/store.js');
+  for (const t of graph.tasks) {
+    const a = byTask.get(t.id);
+    if (!a) continue;
+    for (const attempt of await listWorkspaceAttempts(speccraftDir, runId, t.id)) {
+      const ws = await readWorkspace(speccraftDir, runId, t.id, attempt);
+      if (!ws) continue;
+      if (ws.executorProfile !== undefined && ws.executorProfile !== a.executor) {
+        violations.push(
+          `workspace ${t.id}/attempt-${String(attempt).padStart(3, '0')} executor_profile ${ws.executorProfile} 不匹配 assignment executor ${a.executor}`,
+        );
+      }
+    }
+  }
+
+  // 9/10. dispatch.executor_profile == assignment.executor；dispatch.adapter == assignment.adapter
+  // 11. 同 Task retry 不得改变 executor profile
+  // 14. manual executor 不得出现在 auto execution evidence
+  const { listDispatchAttempts, readDispatchAttempt } = await import('../core/dispatch/store.js');
+  const attempts = await listDispatchAttempts(speccraftDir, runId);
+  const profileByTask = new Map<string, Set<string>>();
+  for (const n of attempts) {
+    const m = await readDispatchAttempt(speccraftDir, runId, n);
+    if (!m) continue;
+    const a = m.task_id ? byTask.get(m.task_id) : undefined;
+    // 9：dispatch.executor_profile == assignment.executor
+    if (a && m.executor_profile !== undefined && m.executor_profile !== a.executor) {
+      violations.push(`dispatch attempt ${n} executor_profile ${m.executor_profile} 不匹配 assignment executor ${a.executor}`);
+    }
+    // 10：dispatch.adapter == assignment.adapter
+    if (a && m.adapter && m.adapter !== a.adapter) {
+      violations.push(`dispatch attempt ${n} adapter ${m.adapter} 不匹配 assignment adapter ${a.adapter}`);
+    }
+    // 14：manual executor 不得出现在 auto execution evidence
+    const effectiveAdapter = a?.adapter ?? m.adapter;
+    if (effectiveAdapter === 'manual') {
+      violations.push(`manual executor cannot be auto-dispatched：dispatch attempt ${n} 使用 manual adapter`);
+    }
+    // 11：同 Task retry 的 executor profile 集合
+    if (m.task_id && m.executor_profile !== undefined) {
+      if (!profileByTask.has(m.task_id)) profileByTask.set(m.task_id, new Set());
+      profileByTask.get(m.task_id)!.add(m.executor_profile);
+    }
+  }
+  for (const [taskId, profiles] of profileByTask) {
+    if (profiles.size > 1) {
+      violations.push(`Task ${taskId} retry 改变了 executor profile：${[...profiles].join(' → ')}`);
+    }
+  }
+
+  // 12. new Workspace Attempt 不得改变 executor profile
+  for (const t of graph.tasks) {
+    const profiles = new Set<string>();
+    for (const attempt of await listWorkspaceAttempts(speccraftDir, runId, t.id)) {
+      const ws = await readWorkspace(speccraftDir, runId, t.id, attempt);
+      if (ws?.executorProfile) profiles.add(ws.executorProfile);
+    }
+    if (profiles.size > 1) {
+      violations.push(`Task ${t.id} 的 new Workspace Attempt 改变了 executor profile：${[...profiles].join(' → ')}`);
+    }
+  }
 
   return violations;
 }
@@ -1369,6 +1650,26 @@ export async function cmdTasksShow(taskId: string, projectRoot: string = process
   console.log(`  summary: ${task.summary}`);
   console.log(`  dependencies: ${task.dependsOn.length > 0 ? task.dependsOn.join(', ') : '（无）'}`);
   console.log(`  scope: ${task.scope.paths.join(', ')}`);
+  // v0.7 §53：Executor / Adapter / Assignment source（只读 frozen plan.yaml）
+  const { readExecutorPlanOrNull } = await import('../core/executors/store.js');
+  const executorPlan = await readExecutorPlanOrNull(speccraftDir, runId);
+  const assignment = executorPlan?.assignments.find((a) => a.taskId === taskId);
+  if (assignment) {
+    console.log(`  executor: ${assignment.executor}`);
+    console.log(`  adapter: ${assignment.adapter}`);
+    console.log(`  assignment source: ${assignment.source}`);
+  } else {
+    // legacy：无 plan → legacy-default 逻辑 profile；adapter 取最新 dispatch attempt
+    let legacyAdapter = 'manual';
+    if (dA.length > 0) {
+      const { readDispatchAttempt } = await import('../core/dispatch/store.js');
+      const last = await readDispatchAttempt(speccraftDir, runId, dA[dA.length - 1]);
+      if (last?.adapter) legacyAdapter = last.adapter;
+    }
+    console.log('  executor: legacy-default');
+    console.log(`  adapter: ${legacyAdapter}`);
+    console.log('  assignment source: legacy');
+  }
   console.log(`  verification: ${task.verification.commands.join('; ')}（timeout ${task.verification.timeoutSeconds}s）`);
   console.log(`  dispatch attempts: [${dA.join(', ')}]`);
   console.log(`  verification attempts: [${vA.join(', ')}]`);

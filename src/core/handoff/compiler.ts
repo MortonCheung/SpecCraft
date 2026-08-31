@@ -153,6 +153,70 @@ export async function compileAcceptanceHistory(
   return lines;
 }
 
+/**
+ * 编译 executor history（v0.7 §56）。
+ *
+ * 确定性聚合：Task | Executor Profile | Adapter | Model（如果声明）|
+ * Dispatch Attempts | Workspace Attempts | Provider Sessions。
+ * 数据源为 frozen Executor Plan / dispatch manifests / workspace manifests；
+ * 不调用 AI。legacy Run（无 Executor Plan）输出占位说明。
+ */
+export async function compileExecutorHistory(
+  speccraftDir: string,
+  runId: string,
+): Promise<string[]> {
+  const { readExecutorPlanOrNull } = await import('../executors/store.js');
+  const plan = await readExecutorPlanOrNull(speccraftDir, runId);
+  if (!plan) {
+    return ['（无 Executor Plan：Run 未编译 Task Graph / Executor Plan）'];
+  }
+
+  const { readTaskGraphOrNull } = await import('../tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  const { listDispatchAttempts, readDispatchAttempt } = await import('../dispatch/store.js');
+  const { listWorkspaceAttempts, readWorkspace } = await import('../workspaces/store.js');
+
+  const byTask = new Map(plan.assignments.map((a) => [a.taskId, a]));
+
+  // Task → dispatch attempts / provider sessions（去重保留顺序）
+  const dispatchByTask = new Map<string, string[]>();
+  const sessionsByTask = new Map<string, string[]>();
+  for (const n of await listDispatchAttempts(speccraftDir, runId)) {
+    const m = await readDispatchAttempt(speccraftDir, runId, n);
+    if (!m?.task_id) continue;
+    if (!dispatchByTask.has(m.task_id)) dispatchByTask.set(m.task_id, []);
+    dispatchByTask.get(m.task_id)!.push(String(n));
+    if (m.session_id) {
+      if (!sessionsByTask.has(m.task_id)) sessionsByTask.set(m.task_id, []);
+      if (!sessionsByTask.get(m.task_id)!.includes(m.session_id)) {
+        sessionsByTask.get(m.task_id)!.push(m.session_id);
+      }
+    }
+  }
+
+  // Task → workspace attempts
+  const workspaceByTask = new Map<string, string[]>();
+  for (const [taskId] of byTask) {
+    const attempts = await listWorkspaceAttempts(speccraftDir, runId, taskId);
+    if (attempts.length > 0) workspaceByTask.set(taskId, attempts.map(String));
+  }
+
+  const lines: string[] = [`Executor Run: ${runId}`];
+  for (const t of graph?.tasks ?? []) {
+    const a = byTask.get(t.id);
+    if (!a) continue;
+    lines.push('');
+    lines.push(`### ${t.id}`);
+    lines.push(`- Executor Profile: ${a.executor}`);
+    lines.push(`- Adapter: ${a.adapter}`);
+    if (a.resolved.model) lines.push(`- Model: ${a.resolved.model}`);
+    lines.push(`- Dispatch Attempts: [${(dispatchByTask.get(t.id) ?? []).join(', ') || '无'}]`);
+    lines.push(`- Workspace Attempts: [${(workspaceByTask.get(t.id) ?? []).join(', ') || '无'}]`);
+    lines.push(`- Provider Sessions: [${(sessionsByTask.get(t.id) ?? []).join(', ') || '无'}]`);
+  }
+  return lines;
+}
+
 /** 采集 handoff 时点的只读 Git 快照（非 Git 仓库返回 available:false，不伪造 commit） */
 export async function compileGitSnapshot(projectRoot: string): Promise<HandoffManifest['git']> {
   const snap = await captureGitSnapshot(projectRoot);
@@ -210,6 +274,10 @@ export function renderHandoffDoc(input: HandoffCompileInput): string {
     '',
     ...input.acceptanceHistory,
     '',
+    '## Executor history 摘要',
+    '',
+    ...input.executorHistory,
+    '',
     '## 如何继续接手',
     '',
     '1. 阅读本目录下 HANDOFF.md 与 context.md；',
@@ -251,6 +319,9 @@ export function renderManifestYaml(input: HandoffCompileInput): string {
       'context.md',
       'decisions.md',
       'execution-history.md',
+      'task-history.md',
+      'workspace-history.md',
+      'executor-history.md',
       'verification-history.md',
       'acceptance-history.md',
       'manifest.yaml',

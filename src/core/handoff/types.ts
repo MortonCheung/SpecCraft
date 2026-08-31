@@ -67,6 +67,8 @@ export interface HandoffCompileInput {
   verificationHistory: string[];
   /** acceptance history 摘要行 */
   acceptanceHistory: string[];
+  /** executor history 摘要行（v0.7 §56） */
+  executorHistory: string[];
 
   /** 缺失的 artifact id 列表（manifest 必须显式记录） */
   missingArtifacts: string[];

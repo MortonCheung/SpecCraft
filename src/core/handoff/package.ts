@@ -15,6 +15,7 @@ import {
   compileExecutionHistory,
   compileVerificationHistory,
   compileAcceptanceHistory,
+  compileExecutorHistory,
   compileGitSnapshot,
   renderHandoffDoc,
   renderDecisionsDoc,
@@ -52,6 +53,7 @@ export async function compileHandoffPackage(
   const executionHistory = await compileExecutionHistory(speccraftDir, run.id);
   const verificationHistory = await compileVerificationHistory(speccraftDir, run.id);
   const acceptanceHistory = await compileAcceptanceHistory(speccraftDir, run.id);
+  const executorHistory = await compileExecutorHistory(speccraftDir, run.id);
   const git = await compileGitSnapshot(projectRoot);
   const sourceLists = await makeSourceLists(speccraftDir, run.id);
 
@@ -66,6 +68,7 @@ export async function compileHandoffPackage(
     executionHistory,
     verificationHistory,
     acceptanceHistory,
+    executorHistory,
     missingArtifacts,
     git,
     verification: {
@@ -89,6 +92,7 @@ export async function compileHandoffPackage(
     'execution-history.md': `# Execution History\n\n${executionHistory.join('\n')}\n`,
     'verification-history.md': `# Verification History\n\n${verificationHistory.join('\n')}\n`,
     'acceptance-history.md': `# Acceptance History\n\n${acceptanceHistory.join('\n')}\n`,
+    'executor-history.md': `# Executor History\n\n${executorHistory.join('\n')}\n`,
     'manifest.yaml': manifestYaml,
   };
 
