@@ -92,6 +92,12 @@ export async function compileHandoffPackage(
     'manifest.yaml': manifestYaml,
   };
 
+  // Task History（v0.5：有 Task Graph 时确定性生成，不调 AI）
+  const taskHistory = await compileTaskHistory(speccraftDir, run.id);
+  if (taskHistory) {
+    files['task-history.md'] = taskHistory;
+  }
+
   const dir = handoffDir(speccraftDir, handoffId);
   await mkdir(dir, { recursive: true });
   const written: string[] = [];
@@ -103,3 +109,37 @@ export async function compileHandoffPackage(
 }
 
 export type { HandoffCompileInput };
+
+/** 确定性生成 Task History（有 Task Graph 时）；无则返回 null */
+async function compileTaskHistory(speccraftDir: string, runId: string): Promise<string | null> {
+  const { readTaskGraphOrNull, readAllTaskManifests } = await import('../tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) return null;
+
+  const manifests = await readAllTaskManifests(speccraftDir, runId);
+  const { listDispatchAttemptsForTask } = await import('../dispatch/store.js');
+  const { listTaskVerificationAttempts } = await import('../tasks/verification/lifecycle.js');
+
+  const lines: string[] = [
+    '# Task History',
+    '',
+    `Run: ${runId}`,
+    `Task Graph 任务数：${graph.tasks.length}`,
+    '',
+    '## Task 最终状态',
+    '',
+  ];
+  for (const t of graph.tasks) {
+    const m = manifests.get(t.id);
+    const dA = await listDispatchAttemptsForTask(speccraftDir, runId, t.id);
+    const vA = await listTaskVerificationAttempts(speccraftDir, runId, t.id);
+    lines.push(`- ${t.id}: ${m?.status ?? '?'}`);
+    lines.push(`  - dependencies: ${t.dependsOn.length > 0 ? t.dependsOn.join(', ') : '（无）'}`);
+    lines.push(`  - dispatch attempts: [${dA.join(', ') || '无'}]`);
+    lines.push(`  - verification attempts: [${vA.join(', ') || '无'}]`);
+    lines.push(`  - reopened count: ${m?.reopenedCount ?? 0}`);
+    if (m?.latestSessionId) lines.push(`  - provider session: ${m.latestSessionId}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}

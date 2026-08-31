@@ -77,6 +77,22 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
       } catch {
         // 读取 dispatch 失败不阻塞 status
       }
+      // Task Graph 摘要（如有）
+      try {
+        const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+        const graph = await readTaskGraphOrNull(speccraftDir, run.id);
+        if (graph) {
+          const manifests = await readAllTaskManifests(speccraftDir, run.id);
+          const { refreshStates } = await import('../core/tasks/dependency.js');
+          const statuses = refreshStates(graph, manifests);
+          const count: Record<string, number> = { ready: 0, in_progress: 0, completed: 0, failed: 0, blocked: 0, pending: 0 };
+          for (const s of statuses.values()) count[s] = (count[s] ?? 0) + 1;
+          console.log(`Tasks:`);
+          console.log(`  total: ${graph.tasks.length}  ready: ${count.ready}  in_progress: ${count.in_progress}  completed: ${count.completed}  failed: ${count.failed}  blocked: ${count.blocked}  pending: ${count.pending}`);
+        }
+      } catch {
+        // 读取 tasks 失败不阻塞 status
+      }
       console.log('');
     } else {
       console.log(`Active Run: ${state.active_run}（manifest 缺失，请运行 speccraft validate）`);
@@ -154,6 +170,12 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
     // blocked 状态应伴随 implementation 重开，见下方 in_progress 分支
   }
 
+  // Task Graph 级下一步（有 task graph 且 implementation 未 completed 时优先）
+  if (impl !== 'completed' && state.active_run) {
+    const taskGuidance = await taskGraphGuidance(speccraftDir, state.active_run);
+    if (taskGuidance) return taskGuidance;
+  }
+
   if (impl === 'completed') {
     return '下一步：speccraft verify';
   }
@@ -219,6 +241,46 @@ async function nextExecutionGuidance(speccraftDir: string, state: State): Promis
     ].join('\n');
   }
   return '下一步：speccraft implement start';
+}
+
+/** Task Graph 级下一步引导；无 task graph 返回 null */
+async function taskGraphGuidance(speccraftDir: string, runId: string): Promise<string | null> {
+  const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) return null;
+  const manifests = await readAllTaskManifests(speccraftDir, runId);
+  const { refreshStates, firstReadyTask, hasFailedTask, allCompleted } = await import('../core/tasks/dependency.js');
+  const statuses = refreshStates(graph, manifests);
+
+  if (hasFailedTask(statuses)) {
+    const failed = graph.tasks.filter((t) => statuses.get(t.id) === 'failed').map((t) => t.id);
+    return [
+      `有 failed Task：${failed.join(', ')}`,
+      `修复后：speccraft tasks reopen ${failed[0]} 或 speccraft dispatch --task ${failed[0]}`,
+    ].join('\n');
+  }
+  if (allCompleted(graph, statuses)) {
+    return [
+      'Implementation Task Graph complete.',
+      'Next:',
+      '  speccraft execute（聚合 finish）或 speccraft verify',
+    ].join('\n');
+  }
+  const inProgress = graph.tasks.find((t) => statuses.get(t.id) === 'in_progress');
+  if (inProgress) {
+    return [
+      `Task verification required: ${inProgress.id}`,
+      `Next: speccraft tasks verify ${inProgress.id}`,
+    ].join('\n');
+  }
+  const next = firstReadyTask(graph, statuses);
+  if (next) {
+    return [
+      `Next: dispatch task ${next}`,
+      `  speccraft dispatch --task ${next}（或 speccraft execute 自动顺序执行）`,
+    ].join('\n');
+  }
+  return 'Task Graph：无 ready Task（可能全部 pending/blocked）。';
 }
 
 /** speccraft approve <stage> [--by <who>] */
@@ -540,6 +602,27 @@ export async function cmdDispatch(
       executionGuard = '';
     }
 
+    // before_dispatch hook（blocking，含 SPECCRAFT_TASK_ID）
+    const taskHookCtx = {
+      projectRoot,
+      speccraftDir,
+      runId: run.id,
+      env: {
+        SPECCRAFT_EVENT: 'before_dispatch',
+        SPECCRAFT_PROJECT_ROOT: projectRoot,
+        SPECCRAFT_DIR: speccraftDir,
+        SPECCRAFT_STAGE: 'implementation',
+        SPECCRAFT_ADAPTER: adapter.id,
+        SPECCRAFT_TASK_ID: opts.task,
+      },
+    };
+    const { runBeforeHooks, runAfterHooks } = await import('../core/hooks/lifecycle.js');
+    const taskBefore = await runBeforeHooks(taskHookCtx, config.hooks, 'before_dispatch');
+    if (taskBefore.blocked) {
+      console.error('错误：before_dispatch hook 失败，已中止 dispatch。');
+      return 1;
+    }
+
     const result = await dispatchTask({
       speccraftDir,
       projectRoot,
@@ -551,6 +634,12 @@ export async function cmdDispatch(
       freshSession: opts.freshSession === true,
       ...(adapterConfig ? { adapterConfig } : {}),
     });
+
+    await runAfterHooks(
+      { ...taskHookCtx, env: { ...taskHookCtx.env, SPECCRAFT_EVENT: 'after_dispatch', SPECCRAFT_DISPATCH_ATTEMPT: String(result.attempt) } },
+      config.hooks,
+      'after_dispatch',
+    );
 
     if (!result.success) {
       console.error(`Task ${opts.task} Dispatch Attempt ${result.attempt} 失败。`);
@@ -775,6 +864,70 @@ async function validateExecutionConsistency(speccraftDir: string, state: State):
 
   // ---- Dispatch 一致性（ADR 0005 §4） ----
   violations.push(...(await checkDispatchConsistency(speccraftDir, state, run.id)));
+
+  // ---- Task Graph 一致性（ADR 0006） ----
+  violations.push(...(await checkTaskConsistency(speccraftDir, run.id)));
+
+  return violations;
+}
+
+/** Task Graph invariant：schema/DAG/manifest/evidence 一致性 */
+async function checkTaskConsistency(speccraftDir: string, runId: string): Promise<string[]> {
+  const violations: string[] = [];
+  const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) return violations; // legacy Run 不强制 Task Graph
+
+  // task id 唯一
+  const ids = graph.tasks.map((t) => t.id);
+  if (new Set(ids).size !== ids.length) {
+    violations.push('Task Graph 存在重复 task id');
+  }
+
+  // 依赖存在 + 无 self + 无 cycle（复用 compiler 校验）
+  const { validateGraphConstraints } = await import('../core/tasks/compiler.js');
+  try {
+    validateGraphConstraints(graph);
+  } catch (err) {
+    violations.push(`Task Graph 约束违规：${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const manifests = await readAllTaskManifests(speccraftDir, runId);
+  const { refreshStates } = await import('../core/tasks/dependency.js');
+  const statuses = refreshStates(graph, manifests);
+
+  // manifest id 匹配 graph + completed 必须有 PASS verification
+  for (const t of graph.tasks) {
+    const m = manifests.get(t.id);
+    if (!m) {
+      violations.push(`Task ${t.id} 缺少 manifest`);
+      continue;
+    }
+    if (m.id !== t.id) {
+      violations.push(`Task manifest id 不匹配：${m.id} != ${t.id}`);
+    }
+    if (m.status === 'completed' && m.verificationAttempts.length === 0) {
+      violations.push(`Task ${t.id} 为 completed 但没有 Task Verification attempt`);
+    }
+  }
+
+  // failed task 的 dependents 不得 ready
+  for (const t of graph.tasks) {
+    const depFailed = t.dependsOn.some((d) => statuses.get(d) === 'failed');
+    if (depFailed && statuses.get(t.id) === 'ready') {
+      violations.push(`Task ${t.id} 依赖 failed 但状态为 ready`);
+    }
+  }
+
+  // task dispatch attempt 的 task_id 必须存在于 graph
+  const { listDispatchAttempts, readDispatchAttempt } = await import('../core/dispatch/store.js');
+  const attempts = await listDispatchAttempts(speccraftDir, runId);
+  for (const a of attempts) {
+    const m = await readDispatchAttempt(speccraftDir, runId, a);
+    if (m?.task_id && !ids.includes(m.task_id)) {
+      violations.push(`dispatch attempt ${a} 引用不存在的 task_id ${m.task_id}`);
+    }
+  }
 
   return violations;
 }

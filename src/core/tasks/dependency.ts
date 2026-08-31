@@ -62,8 +62,8 @@ export function refreshStates(
   const result = new Map<string, TaskStatus>();
   for (const t of graph.tasks) {
     const m = manifests.get(t.id);
-    if (m && (m.status === 'completed' || m.status === 'failed')) {
-      // 终态保持（reopen 由显式命令处理）
+    // 终态（completed/failed）与运行时中间态（in_progress）保持
+    if (m && (m.status === 'completed' || m.status === 'failed' || m.status === 'in_progress')) {
       result.set(t.id, m.status);
       continue;
     }

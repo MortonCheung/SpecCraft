@@ -175,6 +175,7 @@ function toEnv(env: HookEnvironment): Record<string, string> {
     'SPECCRAFT_VERIFICATION_ATTEMPT',
     'SPECCRAFT_ACCEPTANCE_ATTEMPT',
     'SPECCRAFT_ADAPTER',
+    'SPECCRAFT_TASK_ID',
   ] as const) {
     const v = env[key];
     if (v) out[key] = v;

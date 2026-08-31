@@ -53,6 +53,7 @@ export interface HookEnvironment {
   SPECCRAFT_VERIFICATION_ATTEMPT?: string;
   SPECCRAFT_ACCEPTANCE_ATTEMPT?: string;
   SPECCRAFT_ADAPTER?: string;
+  SPECCRAFT_TASK_ID?: string;
 }
 
 /** 单个 hook 的执行结果 */
