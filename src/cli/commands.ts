@@ -1081,3 +1081,72 @@ export async function cmdTasksReopen(
     return 1;
   }
 }
+
+/** speccraft execute：确定性顺序执行 Task Graph（单写者） */
+export async function cmdExecute(
+  opts: { adapter?: string; freshSession?: boolean },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { state, speccraftDir } = await loadProject(projectRoot);
+  if (!state.active_run) {
+    console.error('错误：没有活跃的 Execution Run，请先 speccraft prepare。');
+    return 1;
+  }
+  const runId = state.active_run;
+  const { readTaskGraphOrNull } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) {
+    console.error('错误：当前 Run 没有 Task Graph（legacy Run）。请用 speccraft dispatch 或 implement start。');
+    return 1;
+  }
+
+  const { loadProjectConfig } = await import('../core/project.js');
+  const config = await loadProjectConfig(speccraftDir);
+  const { getAdapter } = await import('../core/execution/adapters/registry.js');
+  const adapterId = opts.adapter ?? config.execution?.defaultAdapter ?? 'manual';
+  const adapter = getAdapter(adapterId);
+  if (!adapter || adapter.kind !== 'cli') {
+    console.error(`错误：adapter ${adapterId} 不是可用的 cli adapter。`);
+    return 1;
+  }
+  const adapterConfig = config.execution?.adapters[adapterId];
+
+  const { readFile } = await import('node:fs/promises');
+  let runContext = '';
+  try {
+    runContext = await readFile(path.join(speccraftDir, 'runs', runId, 'context.md'), 'utf8');
+  } catch {
+    runContext = '（无 run context）';
+  }
+  const { skillsDir } = await import('../utils/paths.js');
+  let executionGuard = '';
+  try {
+    executionGuard = await readFile(path.join(skillsDir, 'execution-guard', 'SKILL.md'), 'utf8');
+  } catch {
+    executionGuard = '';
+  }
+
+  const { executeTaskGraph } = await import('../core/tasks/orchestrator.js');
+  const result = await executeTaskGraph({
+    speccraftDir,
+    projectRoot,
+    runId,
+    adapter,
+    runContext,
+    executionGuard,
+    freshSession: opts.freshSession === true,
+    ...(adapterConfig ? { adapterConfig } : {}),
+  });
+
+  if (!result.complete) {
+    console.error(`execute 中止（${result.reason}），已完成 ${result.completedTasks}/${graph.tasks.length} 个 Task。`);
+    console.error(`已顺序执行：${result.executed.join(', ') || '（无）'}`);
+    return 1;
+  }
+
+  console.log(`Task Graph 完成（${result.executed.join(' → ')}）。`);
+  console.log(`已生成 Aggregate Report：${result.reportFile}`);
+  console.log('implementation = completed，Run = awaiting_verification');
+  console.log('下一步：speccraft verify');
+  return 0;
+}

@@ -22,6 +22,7 @@ import {
   cmdTasksShow,
   cmdTasksVerify,
   cmdTasksReopen,
+  cmdExecute,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -142,6 +143,11 @@ async function main(): Promise<number> {
           run: args.flags.run,
           freshSession: args.flags['fresh-session'] !== undefined,
           task: args.flags.task,
+        });
+      case 'execute':
+        return await cmdExecute({
+          adapter: args.flags.adapter,
+          freshSession: args.flags['fresh-session'] !== undefined,
         });
       case 'tasks': {
         const sub = args.positionals[0];
