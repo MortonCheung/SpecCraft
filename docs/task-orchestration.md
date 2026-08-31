@@ -1,6 +1,7 @@
-# Task Orchestration（v0.5）
+# Task Orchestration
 
-**v0.5 is sequential by design.**
+**v0.5 默认 sequential by design；v0.6 已实现可选的 worktree 隔离并行
+（`execute --parallel`），本文档描述 deterministic 调度语义。**
 
 ## 确定性顺序 Scheduler
 
@@ -33,7 +34,7 @@ while true:
 
 ## 单写者（single-writer）
 
-v0.5 不实现：
+v0.5 默认不实现：
 
 - Git worktree
 - parallel code execution
@@ -44,8 +45,10 @@ v0.5 不实现：
 - multi-agent debate
 - AI scheduler
 
-**真正安全的 worktree 并行属于 v0.6**（workspace isolation + git worktree +
-safe integration）。
+**worktree 隔离并行已由 v0.6 实现**（workspace isolation + git worktree +
+safe integration，见 [parallel-execution.md](parallel-execution.md) 与
+[worktree-isolation.md](worktree-isolation.md)）。v0.6 并行 route 严格
+保持本文的确定性调度语义（声明顺序、单写者证据、不做 AI 排序）。
 
 ## Task-aware Dispatch
 

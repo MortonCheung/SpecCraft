@@ -10,7 +10,7 @@ export type TaskStatus =
   | 'pending' // 依赖尚未全部 completed
   | 'ready' // 全部依赖 completed
   | 'in_progress' // 正在 dispatch 或等待 Task Verification
-  | 'completed' // Task Verification PASS
+  | 'completed' // 全部施工与集成完成（sequential：Task Verification PASS；parallel：集成后）
   | 'failed' // 最近 dispatch 或 Task Verification FAIL
   | 'blocked'; // 至少一个 dependency 当前 failed
 
