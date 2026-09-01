@@ -237,7 +237,32 @@ async function generateAggregateReport(
     const m = manifests.get(t.id);
     const dA = await listDispatchAttemptsForTask(speccraftDir, runId, t.id);
     const vA = await listTaskVerificationAttempts(speccraftDir, runId, t.id);
-    lines.push(`- ${t.id}: ${m?.status ?? '?'}（dispatch [${dA.join(', ')}]，verify [${vA.join(', ')}]）`);
+    let reviewInfo = '';
+    try {
+      const { readReviewPlanOrNull } = await import('../reviews/store.js');
+      const { reviewEvidenceDir } = await import('../reviews/paths.js');
+      const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+      if (reviewPlan?.enabled && reviewPlan.gates.length > 0) {
+        const gateResults: string[] = [];
+        for (const gate of reviewPlan.gates) {
+          const evidenceDir = reviewEvidenceDir(speccraftDir, runId, t.id, gate.id);
+          let latestDecision = 'none';
+          try {
+            const { readdir } = await import('node:fs/promises');
+            const entries = await readdir(evidenceDir);
+            const attempts = entries.filter((e) => /^attempt-\d+$/.test(e)).sort();
+            if (attempts.length > 0) {
+              const { readReviewManifestOrNull } = await import('../reviews/attempt.js');
+              const manifest = await readReviewManifestOrNull(`${evidenceDir}/${attempts[attempts.length - 1]}/manifest.yaml`);
+              if (manifest) latestDecision = manifest.decision;
+            }
+          } catch { /* no evidence */ }
+          gateResults.push(`${gate.id} ${latestDecision.toUpperCase()}`);
+        }
+        reviewInfo = `，review [${gateResults.join('，')}]`;
+      }
+    } catch { /* review not available */ }
+    lines.push(`- ${t.id}: ${m?.status ?? '?'}（dispatch [${dA.join(', ')}]，verify [${vA.join(', ')}]${reviewInfo}）`);
   }
   lines.push('');
   lines.push('## 证据引用');

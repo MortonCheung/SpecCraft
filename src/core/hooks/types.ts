@@ -17,6 +17,8 @@ export const HOOK_EVENTS = [
   'after_dispatch',
   'before_verify',
   'after_verify',
+  'before_review',
+  'after_review',
   'before_accept',
   'after_accept',
   'before_reject',
@@ -61,6 +63,12 @@ export interface HookEnvironment {
   SPECCRAFT_WORKSPACE_ATTEMPT?: string;
   /** v0.6 parallel route：当前 wave 序号 */
   SPECCRAFT_WAVE?: string;
+  /** v0.8：review gate id */
+  SPECCRAFT_REVIEW_GATE?: string;
+  /** v0.8：review attempt number */
+  SPECCRAFT_REVIEW_ATTEMPT?: string;
+  /** v0.8：reviewer profile id */
+  SPECCRAFT_REVIEWER_PROFILE?: string;
 }
 
 /** 单个 hook 的执行结果 */

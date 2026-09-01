@@ -150,6 +150,18 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
       } catch {
         // 读取 tasks 失败不阻塞 status
       }
+      // v0.8 §91：Review 简要信息
+      try {
+        const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+        const reviewPlan = await readReviewPlanOrNull(speccraftDir, run.id);
+        if (reviewPlan?.enabled && reviewPlan.gates.length > 0) {
+          console.log('Review:');
+          console.log(`  enabled`);
+          console.log(`  gates: ${reviewPlan.gates.map((g) => g.id).join(', ')}`);
+        }
+      } catch {
+        // 读取 review 失败不阻塞 status
+      }
       console.log('');
     } else {
       console.log(`Active Run: ${state.active_run}（manifest 缺失，请运行 speccraft validate）`);
@@ -327,6 +339,28 @@ async function taskGraphGuidance(projectRoot: string, speccraftDir: string, runI
     const failed = graph.tasks.filter((t) => statuses.get(t.id) === 'failed').map((t) => t.id);
     const blockedFailed = failed.map((id) => blockedByTask.get(id)).find((b) => b);
     if (blockedFailed) return executorBlockedMessage(blockedFailed);
+
+    // v0.8 §93：review rework guidance
+    const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    if (reviewPlan?.enabled) {
+      const { compileLatestReviewFeedback } = await import('../core/reviews/feedback.js');
+      for (const id of failed) {
+        const fb = await compileLatestReviewFeedback(speccraftDir, runId, id);
+        if (fb.hasBlockingFeedback) {
+          return [
+            `Task ${id} requires review rework.`,
+            '',
+            'Inspect:',
+            `  speccraft reviews show ${id}`,
+            '',
+            'Then:',
+            `  speccraft tasks reopen ${id}`,
+          ].join('\n');
+        }
+      }
+    }
+
     // v0.6 §19：integration conflict 单独提示（需人工 resolution/rework）
     const { readWorkspaceDetail } = await import('../core/workspaces/diagnostics.js');
     const conflicts: string[] = [];
@@ -1695,6 +1729,36 @@ export async function cmdTasksShow(taskId: string, projectRoot: string = process
   if (m?.latestSessionId) console.log(`  provider session: ${m.latestSessionId}`);
   if (m?.lastError) console.log(`  last error: ${m.lastError}`);
   console.log(`  reopened count: ${m?.reopenedCount ?? 0}`);
+  // v0.8 §92：Review status per gate
+  try {
+    const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+    const { reviewEvidenceDir } = await import('../core/reviews/paths.js');
+    const { readdir } = await import('node:fs/promises');
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    if (reviewPlan?.enabled && reviewPlan.gates.length > 0) {
+      console.log('  Reviews:');
+      for (const gate of reviewPlan.gates) {
+        const evidenceDir = reviewEvidenceDir(speccraftDir, runId, taskId, gate.id);
+        let attemptCount = 0;
+        let latestDecision = 'none';
+        try {
+          const entries = await readdir(evidenceDir);
+          const attempts = entries.filter((e) => /^attempt-\d+$/.test(e)).sort();
+          attemptCount = attempts.length;
+          if (attempts.length > 0) {
+            const { readReviewManifestOrNull } = await import('../core/reviews/attempt.js');
+            const manifest = await readReviewManifestOrNull(`${evidenceDir}/${attempts[attempts.length - 1]}/manifest.yaml`);
+            if (manifest) latestDecision = manifest.decision;
+          }
+        } catch {
+          // no evidence yet
+        }
+        console.log(`    ${gate.id}: attempts ${attemptCount}  latest: ${latestDecision.toUpperCase()}`);
+      }
+    }
+  } catch {
+    // review not available
+  }
   return 0;
 }
 
