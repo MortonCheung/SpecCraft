@@ -5,9 +5,11 @@ import { loadWorkflowFile } from './workflow/loader.js';
 import { readState, WORKFLOW_FILE, PROJECT_FILE } from './state/store.js';
 import { parseHookConfig } from './hooks/config.js';
 import { parseExecutorsSection } from './executors/config.js';
+import { parseReviewConfig } from './reviews/config.js';
 import type { HookConfig } from './hooks/types.js';
 import type { Workflow, State } from './types.js';
 import type { ExecutorProfileConfig } from './executors/types.js';
+import type { ReviewConfig } from './reviews/types.js';
 
 export interface ProjectContext {
   speccraftDir: string;
@@ -44,13 +46,14 @@ export interface ExecutionConfig {
   executors: Record<string, ExecutorProfileConfig>;
 }
 
-/** .speccraft/project.yaml 的结构（兼容旧文件：verification / execution / hooks 可选） */
+/** .speccraft/project.yaml 的结构（兼容旧文件：verification / execution / hooks / review 可选） */
 export interface ProjectConfig {
   name: string;
   createdAt?: string;
   verification?: VerificationConfig;
   execution?: ExecutionConfig;
   hooks?: HookConfig;
+  review?: ReviewConfig;
 }
 
 /** 解析 project.yaml 文本（旧文件无 verification 字段时给出安全默认值） */
@@ -150,6 +153,10 @@ export function parseProjectConfig(source: string): ProjectConfig {
 
   if (obj.hooks !== undefined && obj.hooks !== null) {
     config.hooks = parseHookConfig(obj.hooks);
+  }
+
+  if (obj.review !== undefined && obj.review !== null) {
+    config.review = parseReviewConfig(obj.review) ?? undefined;
   }
 
   return config;
