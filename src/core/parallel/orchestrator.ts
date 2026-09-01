@@ -73,6 +73,8 @@ export interface ExecuteParallelOptions {
   executorResolver?: ExecutorResolver;
   /** 项目级 hooks（§17：parallel route 复用既有 4 个 dispatch/verify 事件） */
   hooks?: HookConfig;
+  /** v0.8：frozen Review Plan（ADR 0009 §18）。enabled=true 时启用 Independent Review Gates。 */
+  reviewPlan?: import('../reviews/types.js').ReviewPlan | null;
 }
 
 export interface ExecuteParallelResult {
@@ -83,7 +85,8 @@ export interface ExecuteParallelResult {
     | 'dispatch_failed'
     | 'verify_failed'
     | 'canonical_drift'
-    | 'preflight_failed';
+    | 'preflight_failed'
+    | 'review_failed';
   /** wave 总数 */
   waves: number;
   /** 参与 parallel 执行的 task 数 */
@@ -161,6 +164,9 @@ export async function executeParallelTaskGraph(options: ExecuteParallelOptions):
     // v0.7：frozen plan.yaml → taskId → Executor Assignment（一次读取，全程复用；ADR 0008 §21）
     const executorAssignments = await loadExecutorAssignments(speccraftDir, runId);
 
+    // v0.8：review enabled flag（§74-§78）
+    const reviewEnabled = options.reviewPlan?.enabled === true && (options.reviewPlan?.gates.length ?? 0) > 0;
+
     while (true) {
       if (hasFailedTask(statuses)) {
         return finalize(options, graph, manifests, {
@@ -229,9 +235,9 @@ export async function executeParallelTaskGraph(options: ExecuteParallelOptions):
         contexts.push(ctx);
       }
 
-      // parallel dispatch / audit / verify / commit（真并行，Promise.allSettled，§14.5）
+      // parallel dispatch / audit / verify / review / commit（真并行，Promise.allSettled，§14.5）
       const settled = await Promise.allSettled(
-        contexts.map((ctx) => executeIsolatedTask(options, graph, ctx, waveManifest.wave, executorAssignments.get(ctx.taskId))),
+        contexts.map((ctx) => executeIsolatedTask(options, graph, ctx, waveManifest.wave, executorAssignments.get(ctx.taskId), reviewEnabled)),
       );
       const outcomes: IsolatedTaskOutcome[] = settled.map((s, i) => {
         if (s.status === 'fulfilled') return s.value;
@@ -415,6 +421,8 @@ async function executeIsolatedTask(
   wave: number,
   /** v0.7 Executor Assignment snapshot（frozen plan.yaml 读取，ADR 0008 §21） */
   assignment?: ExecutorAssignmentSnapshot,
+  /** v0.8：是否执行 Independent Review Gates（§74） */
+  reviewEnabled?: boolean,
 ): Promise<IsolatedTaskOutcome> {
   const { speccraftDir, runId, projectRoot } = options;
   const taskId = ctx.taskId;
@@ -478,6 +486,19 @@ async function executeIsolatedTask(
   };
 
   try {
+    // v0.8（§74）：capture preTree before dispatch（仅 review enabled）
+    let preTreeCommit: string | undefined;
+    let preTreeTreeId: string | undefined;
+    if (reviewEnabled) {
+      const { captureTreeSnapshot } = await import('../reviews/snapshot.js');
+      const pre = await captureTreeSnapshot(ctx.workspaceRoot, `pre-${taskId}`, `Review pre-snapshot: ${taskId}`);
+      if (!pre.ok) {
+        return fail('review', `capture preTree failed: ${pre.error}`);
+      }
+      preTreeCommit = pre.commitId;
+      preTreeTreeId = pre.treeId;
+    }
+
     // workspace → active
     ws.status = 'active';
     await writeWorkspace(speccraftDir, runId, taskId, ws);
@@ -568,6 +589,50 @@ async function executeIsolatedTask(
       return fail('scope', 'scope audit FAIL：no_changes（verification 后无变更）');
     }
     await writeWorkspace(speccraftDir, runId, taskId, ws);
+
+    // v0.8（§74-§77）：Independent Review Gates（post scope audit → review → git mutation guard）
+    if (reviewEnabled && options.reviewPlan && preTreeCommit && preTreeTreeId) {
+      const { captureTreeSnapshot, computeExactDelta } = await import('../reviews/snapshot.js');
+      const { executeSequentialReviewGates } = await import('../reviews/sequential.js');
+
+      const postSnap = await captureTreeSnapshot(ctx.workspaceRoot, `post-${taskId}`, `Review post-snapshot: ${taskId}`);
+      if (!postSnap.ok) {
+        return fail('review', `capture postTree failed: ${postSnap.error}`);
+      }
+
+      if (preTreeTreeId === postSnap.treeId) {
+        return fail('review', 'no task changes to review (preTree == postTree)');
+      }
+
+      const delta = await computeExactDelta(ctx.workspaceRoot, preTreeCommit, postSnap.commitId);
+      if (!delta.ok) {
+        return fail('review', `delta computation failed: ${delta.error}`);
+      }
+
+      const taskManifest = await readTaskManifest(speccraftDir, runId, taskId);
+      const sourceDispatchAttempt = taskManifest?.dispatchAttempts.length ?? 1;
+      const sourceVerificationAttempt = taskManifest?.verificationAttempts.length ?? 1;
+
+      const reviewResult = await executeSequentialReviewGates({
+        projectRoot: ctx.workspaceRoot,
+        speccraftDir,
+        runId,
+        task,
+        gates: options.reviewPlan.gates,
+        sourceDispatchAttempt,
+        sourceVerificationAttempt,
+        preTree: preTreeTreeId,
+        postTree: postSnap.treeId,
+        preCommit: preTreeCommit,
+        postCommit: postSnap.commitId,
+        diffPatch: delta.patch,
+      });
+
+      if (reviewResult.decision !== 'pass') {
+        ws.failurePhase = 'review';
+        return fail('review', `Review ${reviewResult.decision}: ${reviewResult.error ?? 'review gates failed'}`);
+      }
+    }
 
     // Executor Git Mutation Guard（§9.6：HEAD == baseCommit、branch 正确）
     const gitState = await readWorkspaceGitState(ctx.workspaceRoot);

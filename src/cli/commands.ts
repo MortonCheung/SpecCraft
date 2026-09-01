@@ -2055,10 +2055,15 @@ export async function cmdExecute(
       ...(adapterConfig ? { adapterConfig } : {}),
       ...(executorResolver ? { executorResolver } : {}),
       ...(config.hooks ? { hooks: config.hooks } : {}),
+      ...(reviewPlan ? { reviewPlan } : {}),
     });
 
     if (!result.complete) {
-      console.error(`parallel execute 中止（${result.reason}），已完成 ${result.completed}/${graph.tasks.length} 个 Task。`);
+      if (result.reason === 'review_failed') {
+        console.error(`parallel execute 中止：Review 未通过，已完成 ${result.completed}/${graph.tasks.length} 个 Task。`);
+      } else {
+        console.error(`parallel execute 中止（${result.reason}），已完成 ${result.completed}/${graph.tasks.length} 个 Task。`);
+      }
       if (result.reason === 'canonical_drift') {
         console.error('canonical workspace 已漂移（用户在并行期间修改/commit）。工作区已保留，处理后重新执行。');
       }
