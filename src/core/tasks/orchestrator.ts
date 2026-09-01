@@ -5,6 +5,9 @@
  * 全部 Task completed 后生成 Aggregate Execution Report 并调用一次 implementFinish。
  *
  * Execution ≠ Run Verification：execute 到 awaiting_verification 即停止。
+ *
+ * v0.8（ADR 0009）：review-enabled 时，Task Verification PASS 后执行 Independent Review Gates。
+ * Review PASS 是 Task completed 的必要条件（与 Verification PASS 共同）。
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -18,6 +21,7 @@ import { dispatchTask } from './dispatch.js';
 import { verifyTask } from './verification/lifecycle.js';
 import { implementStart, implementFinish } from '../execution/lifecycle.js';
 import { runDir, readRun } from '../execution/store.js';
+import type { ReviewPlan } from '../reviews/types.js';
 
 export interface ExecuteOptions {
   speccraftDir: string;
@@ -33,23 +37,30 @@ export interface ExecuteOptions {
    * Executor → Adapter；缺省退化为 legacy single-executor fallback（options.adapter）。
    */
   executorResolver?: ExecutorResolver;
+  /** v0.8：frozen Review Plan（ADR 0009 §18）。enabled=true 时启用 Independent Review Gates。 */
+  reviewPlan?: ReviewPlan | null;
 }
 
 export interface ExecuteResult {
   complete: boolean;
   /** complete=false 时的原因 */
-  reason?: 'failed_task' | 'blocked_graph' | 'dispatch_failed' | 'verify_failed';
+  reason?: 'failed_task' | 'blocked_graph' | 'dispatch_failed' | 'verify_failed' | 'review_failed';
   /** 本次执行完成的 task 数 */
   completedTasks: number;
   /** 顺序执行的 task id 列表（确定性） */
   executed: string[];
   /** 聚合 report 文件名（complete 时） */
   reportFile?: string;
+  /** v0.8：review 是否启用 */
+  reviewEnabled?: boolean;
+  /** v0.8：review 失败的 task id（review_failed 时） */
+  reviewFailedTask?: string;
 }
 
 /** 执行完整 Task Graph（单写者顺序） */
 export async function executeTaskGraph(options: ExecuteOptions): Promise<ExecuteResult> {
   const { speccraftDir, runId } = options;
+  const reviewEnabled = options.reviewPlan?.enabled === true && (options.reviewPlan?.gates.length ?? 0) > 0;
 
   // prepared → 显式开始施工（复用 implementStart，同 legacy dispatch）
   const runBefore = await readRun(speccraftDir, runId);
@@ -77,8 +88,7 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
     const task = graph.tasks.find((t) => t.id === next)!;
     executed.push(next);
 
-    // v0.7：per-task Executor 解析（ADR 0008 §38）。resolver 存在 → 按 task 取
-    // Executor → Adapter；缺省 → legacy single-executor fallback（options.adapter）。
+    // v0.7：per-task Executor 解析（ADR 0008 §38）
     let adapter = options.adapter;
     let adapterConfig = options.adapterConfig;
     let executorProfile: string | undefined;
@@ -87,6 +97,19 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
       adapter = r.adapter;
       adapterConfig = r.adapterConfig;
       executorProfile = r.executorId;
+    }
+
+    // v0.8（§36）：capture preTree before dispatch（仅 review enabled）
+    let preTree: string | undefined;
+    let preCommit: string | undefined;
+    if (reviewEnabled) {
+      const { captureTreeSnapshot } = await import('../reviews/snapshot.js');
+      const pre = await captureTreeSnapshot(options.projectRoot, `pre-${next}`, `Review pre-snapshot: ${next}`);
+      if (!pre.ok) {
+        return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+      preTree = pre.treeId;
+      preCommit = pre.commitId;
     }
 
     // dispatch（task ready → in_progress）
@@ -118,6 +141,60 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
       return { complete: false, reason: 'verify_failed', completedTasks: countCompleted(graph, statuses), executed };
     }
 
+    // v0.8（§67）：review-enabled sequential — Verification PASS 后执行 Review Gates
+    if (reviewEnabled && options.reviewPlan) {
+      const { captureTreeSnapshot, computeExactDelta } = await import('../reviews/snapshot.js');
+      const { executeSequentialReviewGates } = await import('../reviews/sequential.js');
+
+      // capture postTree
+      const post = await captureTreeSnapshot(options.projectRoot, `post-${next}`, `Review post-snapshot: ${next}`);
+      if (!post.ok) {
+        return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+
+      // 确保有变化（§40：no_changes → ERROR）
+      if (preTree === post.treeId) {
+        return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+
+      // compute exact delta
+      const delta = await computeExactDelta(options.projectRoot, preCommit!, post.commitId);
+      if (!delta.ok) {
+        return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+
+      // get source dispatch / verification attempt numbers for binding
+      const manifest = manifests.get(next);
+      const sourceDispatchAttempt = manifest?.dispatchAttempts.length ?? 1;
+      const sourceVerificationAttempt = manifest?.verificationAttempts.length ?? 1;
+
+      const reviewResult = await executeSequentialReviewGates({
+        projectRoot: options.projectRoot,
+        speccraftDir,
+        runId,
+        task,
+        gates: options.reviewPlan.gates,
+        sourceDispatchAttempt,
+        sourceVerificationAttempt,
+        preTree: preTree!,
+        postTree: post.treeId,
+        preCommit: preCommit!,
+        postCommit: post.commitId,
+        diffPatch: delta.patch,
+      });
+
+      if (reviewResult.decision !== 'pass') {
+        // §68：Review FAIL → Task failed
+        const taskManifest = await import('./store.js').then((m) => m.readTaskManifest(speccraftDir, runId, next));
+        if (taskManifest) {
+          taskManifest.status = 'failed';
+          taskManifest.lastError = `Review ${reviewResult.decision}: ${reviewResult.error ?? 'review gates failed'}`;
+          await writeTaskManifest(speccraftDir, runId, taskManifest);
+        }
+        return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+    }
+
     // refresh
     manifests = await readAllTaskManifests(speccraftDir, runId);
     statuses = refreshStates(graph, manifests);
@@ -133,6 +210,7 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
     completedTasks: graph.tasks.length,
     executed,
     reportFile: path.basename(reportFile),
+    reviewEnabled,
   };
 }
 

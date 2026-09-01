@@ -2014,6 +2014,21 @@ export async function cmdExecute(
     executionGuard = '';
   }
 
+  // v0.8：加载 frozen review plan（§18）
+  const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+  const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+
+  // v0.8：review preflight（§22-§24）— 在施工前验证 reviewer adapter 可用性
+  if (reviewPlan?.enabled) {
+    const { preflightReviewPlanWithPlan, formatReviewPreflightBlocked } = await import('../core/reviews/preflight.js');
+    const preflight = await preflightReviewPlanWithPlan(reviewPlan);
+    if (preflight.status === 'blocked') {
+      console.error(formatReviewPreflightBlocked(preflight));
+      console.error('修复后重新执行。');
+      return 1;
+    }
+  }
+
   // --parallel：显式 opt-in（默认 sequential，保持 v0.5 行为）
   if (opts.parallel) {
     const { isValidMaxParallel, DEFAULT_MAX_PARALLEL } = await import('../core/parallel/types.js');
@@ -2073,15 +2088,23 @@ export async function cmdExecute(
     freshSession: opts.freshSession === true,
     ...(adapterConfig ? { adapterConfig } : {}),
     ...(executorResolver ? { executorResolver } : {}),
+    ...(reviewPlan ? { reviewPlan } : {}),
   });
 
   if (!result.complete) {
-    console.error(`execute 中止（${result.reason}），已完成 ${result.completedTasks}/${graph.tasks.length} 个 Task。`);
+    if (result.reason === 'review_failed') {
+      console.error(`execute 中止：Task "${result.reviewFailedTask}" Review 未通过，已完成 ${result.completedTasks}/${graph.tasks.length} 个 Task。`);
+    } else {
+      console.error(`execute 中止（${result.reason}），已完成 ${result.completedTasks}/${graph.tasks.length} 个 Task。`);
+    }
     console.error(`已顺序执行：${result.executed.join(', ') || '（无）'}`);
     return 1;
   }
 
   console.log(`Task Graph 完成（${result.executed.join(' → ')}）。`);
+  if (result.reviewEnabled) {
+    console.log('Review：已通过所有 Review Gates。');
+  }
   console.log(`已生成 Aggregate Report：${result.reportFile}`);
   console.log('implementation = completed，Run = awaiting_verification');
   console.log('下一步：speccraft verify');
