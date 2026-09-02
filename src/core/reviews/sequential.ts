@@ -16,7 +16,7 @@
 
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { Task } from '../tasks/types.js';
+import type { TaskDefinition } from '../tasks/types.js';
 import type { FrozenReviewGate, ReviewDecision } from './types.js';
 import { reviewEvidenceDir, reviewWorktreePath } from './paths.js';
 import { createReviewWorktree, removeReviewWorktree, checkReviewerMutation } from './snapshot.js';
@@ -27,7 +27,7 @@ export interface ExecuteSequentialReviewGatesOptions {
   projectRoot: string;
   speccraftDir: string;
   runId: string;
-  task: Task;
+  task: TaskDefinition;
   gates: FrozenReviewGate[];
   sourceDispatchAttempt: number;
   sourceVerificationAttempt: number;
@@ -124,7 +124,7 @@ export async function executeSequentialReviewGates(
 **Title**: ${task.title}
 **Summary**: ${task.summary || '(no summary)'}
 **Scope**: ${(task.scope?.paths ?? []).join(', ') || '(no explicit scope)'}
-**Dependencies**: ${(task.dependencies ?? []).join(', ') || '(none)'}
+**Dependencies**: ${(task.dependsOn ?? []).join(', ') || '(none)'}
 `, 'utf-8');
       await writeFile(path.join(attemptDir, 'diff.patch'), diffPatch, 'utf-8');
       await writeFile(path.join(attemptDir, 'reviewer-prompt.md'), prompt, 'utf-8');

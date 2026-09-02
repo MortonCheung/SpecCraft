@@ -10,16 +10,16 @@
 import { spawn } from 'node:child_process';
 import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { Task } from '../tasks/types.js';
+import type { TaskDefinition } from '../tasks/types.js';
 import type { ReviewDecision, FrozenReviewGate } from './types.js';
 import { parseReviewOutput, deriveReviewDecision } from './protocol.js';
-import { reviewEvidenceDir } from './paths.js';
-import { getAdapterById } from '../execution/adapters/registry.js';
+import { getAdapter } from '../execution/adapters/registry.js';
+import type { CliExecutionAdapter } from '../execution/adapters/types.js';
 
 export interface RunReviewGateOptions {
   projectRoot: string;
   runDir: string;
-  task: Task;
+  task: TaskDefinition;
   gate: FrozenReviewGate;
   attemptNumber: number;
   prompt: string;
@@ -51,7 +51,7 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
     reviewWorktreePath,
   } = options;
 
-  const evidenceDir = reviewEvidenceDir(runDir, task.id, gate.id);
+  const evidenceDir = path.join(runDir, 'tasks', task.id, 'reviews', gate.id);
   const attemptDir = path.join(evidenceDir, `attempt-${String(attemptNumber).padStart(3, '0')}`);
   await mkdir(attemptDir, { recursive: true });
 
@@ -64,16 +64,17 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
   let exitCode: number | null = null;
 
   try {
-    const adapter = getAdapterById(gate.adapter);
-    if (!adapter) {
+    const adapter = getAdapter(gate.adapter);
+    if (!adapter || adapter.kind !== 'cli') {
       return {
         decision: 'error',
         attemptNumber,
-        error: `adapter not found: ${gate.adapter}`,
+        error: adapter ? `adapter ${gate.adapter} is not a CLI adapter` : `adapter not found: ${gate.adapter}`,
       };
     }
 
-    const invocation = await adapter.buildInvocation({
+    const cliAdapter = adapter as CliExecutionAdapter;
+    const invocation = await cliAdapter.buildInvocation({
       projectRoot: reviewWorktreePath,
       runDir: attemptDir,
       prompt,

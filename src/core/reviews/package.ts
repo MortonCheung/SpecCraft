@@ -19,7 +19,7 @@
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Task } from '../tasks/types.js';
+import type { TaskDefinition } from '../tasks/types.js';
 import type { FrozenReviewGate } from './types.js';
 
 export interface ReviewPackage {
@@ -51,7 +51,7 @@ export interface ReviewPackage {
 }
 
 export interface PrepareReviewPackageOptions {
-  task: Task;
+  task: TaskDefinition;
   gate: FrozenReviewGate;
   sourceDispatchAttempt: number;
   sourceVerificationAttempt: number;
@@ -110,9 +110,8 @@ export async function prepareReviewPackage(
     taskId: task.id,
     taskTitle: task.title,
     taskSummary: task.summary || '',
-    taskScope: task.scope || [],
-    taskDependencies: task.dependencies || [],
-    
+    taskScope: task.scope?.paths || [],
+    taskDependencies: task.dependsOn || [],
     gateId: gate.id,
     gateKind: gate.kind,
     

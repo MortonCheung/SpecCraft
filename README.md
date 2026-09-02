@@ -14,7 +14,7 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 ## 当前开发阶段
 
-**v0.7 — Heterogeneous Multi-Executor Routing**
+**v0.8 — Independent Review Gates**
 
 版本演进：
 
@@ -25,8 +25,9 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 - v0.5 Task Graph + Deterministic Orchestration
 - v0.6 Safe Parallel Execution + Worktree Isolation
 - v0.7 Heterogeneous Multi-Executor Routing
+- v0.8 Independent Review Gates
 
-已实现（v0.1 → v0.7 累计）：
+已实现（v0.1 → v0.8 累计）：
 
 - 声明式 16 阶段 Workflow、`.speccraft` 文件优先工作现场（无数据库）；
 - Context Compiler、Execution Run、Verification / Owner Acceptance / Handoff Runtime；
@@ -47,6 +48,12 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
   handoff executor-history.md）；
 - SpecCraft Core 不依赖任何特定 AI 厂商；Provider-specific 能力以可选
   CLI Adapter 存在。
+- **Independent Review Gates（v0.8）**：Verification 后独立质量评估层，
+  opt-in Review Plan（frozen at compile time）、spec_compliance / code_quality
+  两种 gate kind、detached worktree 隔离、mutation detection、fresh session
+  guarantee、structured review protocol、review feedback rework loop、
+  sequential/parallel review gate execution、Review ≠ Verification ≠ Owner
+  Acceptance（`reviews list/plan/doctor/show`）；
 
 尚未实现（后续版本）：SaaS 后端、Web 控制台、云同步、Provider SDK /
 API-key 管理。
@@ -71,6 +78,7 @@ speccraft tasks compile|list|next|show|verify|reopen
 speccraft execute [--adapter <id>] [--parallel] [--max-parallel <n>]
                                            # 确定性执行整个 Task Graph（顺序或 worktree 并行）
 speccraft executors list|plan|doctor       # Executor Profile / frozen Plan / preflight 诊断
+speccraft reviews list|plan|doctor|show    # Review Plan / adapter diagnostics / evidence
 speccraft workspaces list|show|clean      # 工作区诊断（worktree / branch / status）
 speccraft verify                           # 运行项目验证命令（PASS/FAIL）
 speccraft accept [--note|--file] [--by]    # Owner 验收通过

@@ -9,7 +9,6 @@ import { runDir } from '../execution/store.js';
 import { tasksDir } from '../tasks/store.js';
 import { readReviewPlanOrNull } from './store.js';
 import { getAdapter } from '../execution/adapters/registry.js';
-import { probeBinary } from '../execution/adapters/probe.js';
 import type { ReviewPlan, ReviewAttemptManifest } from './types.js';
 
 export interface ReviewsListResult {

@@ -12,18 +12,18 @@
 
 import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { Task } from '../tasks/types.js';
+import type { TaskDefinition } from '../tasks/types.js';
 import type { FrozenReviewGate } from './types.js';
 import { captureTreeSnapshot, computeExactDelta, createReviewWorktree, removeReviewWorktree, checkReviewerMutation } from './snapshot.js';
 import { prepareReviewPackage, buildReviewerPrompt } from './package.js';
 import { runReviewGate } from './runner.js';
-import { reviewWorktreePath, reviewEvidenceDir } from './paths.js';
+import { reviewWorktreePath } from './paths.js';
 
 export interface ReviewLifecycleContext {
   projectRoot: string;
   runId: string;
   runDir: string;
-  task: Task;
+  task: TaskDefinition;
   gates: FrozenReviewGate[];
   sourceDispatchAttempt: number;
   sourceVerificationAttempt: number;
@@ -154,7 +154,7 @@ interface RunSingleReviewGateOptions {
   projectRoot: string;
   runId: string;
   runDir: string;
-  task: Task;
+  task: TaskDefinition;
   gate: FrozenReviewGate;
   sourceDispatchAttempt: number;
   sourceVerificationAttempt: number;
@@ -193,7 +193,7 @@ async function runSingleReviewGate(
   } = options;
 
   // 1. Determine attempt number
-  const evidenceDir = reviewEvidenceDir(runDir, task.id, gate.id);
+  const evidenceDir = path.join(runDir, 'tasks', task.id, 'reviews', gate.id);
   await mkdir(evidenceDir, { recursive: true });
 
   // 2. Compute review worktree path
@@ -247,8 +247,8 @@ async function runSingleReviewGate(
 **Task ID**: ${task.id}
 **Title**: ${task.title}
 **Summary**: ${task.summary || '(no summary)'}
-**Scope**: ${(task.scope || []).join(', ') || '(no explicit scope)'}
-**Dependencies**: ${(task.dependencies || []).join(', ') || '(none)'}
+**Scope**: ${(task.scope?.paths || []).join(', ') || '(no explicit scope)'}
+**Dependencies**: ${(task.dependsOn || []).join(', ') || '(none)'}
 `, 'utf-8');
 
     await writeFile(path.join(attemptDir, 'diff.patch'), diffPatch, 'utf-8');
