@@ -792,6 +792,20 @@ export async function cmdDispatch(
       }
     }
 
+    // v0.8 §22-§25：Review Preflight Gate。review enabled 且 reviewer 不可用 →
+    // 零副作用中止（no dispatch / no task mutation / 不 fallback 到其它 reviewer）。
+    const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, run.id);
+    if (reviewPlan?.enabled) {
+      const { preflightReviewPlanWithPlan, formatReviewPreflightBlocked } = await import('../core/reviews/preflight.js');
+      const reviewPreflight = await preflightReviewPlanWithPlan(reviewPlan);
+      if (reviewPreflight.status === 'blocked') {
+        console.error(formatReviewPreflightBlocked(reviewPreflight));
+        console.error('修复后：speccraft reviews doctor');
+        return 1;
+      }
+    }
+
     let runContext = '';
     try {
       runContext = await readFile(runContextPath, 'utf8');
@@ -2003,6 +2017,117 @@ export async function cmdExecutorsDoctor(projectRoot: string = process.cwd()): P
     return 1;
   }
   console.log('\npreflight PASS');
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Review CLI（v0.8，ADR 0009 §27-§31）
+// ---------------------------------------------------------------------------
+
+/** speccraft reviews list：列出当前 Run 的 Review Gate / Kind / Reviewer / Adapter */
+export async function cmdReviewsList(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled) {
+    console.log('当前 Run 未启用 Review（review.enabled != true）。');
+    return 0;
+  }
+  const { reviewsListFromPlan } = await import('../core/reviews/diagnostics.js');
+  const list = reviewsListFromPlan(plan);
+
+  console.log(`Review Gates（run ${runId}）：`);
+  console.log(`  ${'Gate'.padEnd(13)} ${'Kind'.padEnd(16)} ${'Reviewer'.padEnd(13)} Adapter`);
+  for (const g of list.gates) {
+    console.log(`  ${g.id.padEnd(13)} ${g.kind.padEnd(16)} ${g.reviewer.padEnd(13)} ${g.adapter}`);
+  }
+  console.log('\nReviewer Profiles：');
+  for (const [id, p] of Object.entries(list.reviewerProfiles)) {
+    console.log(`  ${id.padEnd(13)} adapter=${p.adapter} timeout=${p.timeout ?? 900}s`);
+  }
+  return 0;
+}
+
+/** speccraft reviews plan：显示 frozen Run Review Plan */
+export async function cmdReviewsPlan(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled) {
+    console.log('当前 Run 没有启用的 Review Plan（请先 speccraft tasks compile）。');
+    return 1;
+  }
+  const { reviewsPlanFromPlan } = await import('../core/reviews/diagnostics.js');
+  const p = reviewsPlanFromPlan(plan);
+
+  console.log(`Review Plan（run ${p.runId}，frozen）：`);
+  console.log(`  ${'Gate'.padEnd(13)} ${'Kind'.padEnd(16)} ${'Reviewer'.padEnd(13)} ${'Adapter'.padEnd(10)} Timeout`);
+  for (const g of p.gates) {
+    console.log(
+      `  ${g.id.padEnd(13)} ${g.kind.padEnd(16)} ${g.reviewer.padEnd(13)} ${g.adapter.padEnd(10)} ${g.timeout}s`,
+    );
+  }
+  return 0;
+}
+
+/** speccraft reviews doctor：只 probe Review Plan 真正依赖的 adapter（去重，不按 Task × Gate） */
+export async function cmdReviewsDoctor(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled) {
+    console.log('当前 Run 没有启用的 Review Plan（请先 speccraft tasks compile）。');
+    return 1;
+  }
+  const { reviewsDoctor } = await import('../core/reviews/diagnostics.js');
+  const items = await reviewsDoctor(plan);
+
+  console.log(`Review Doctor（run ${runId}，${items.length} 个 adapter，已去重）：`);
+  let blocked = false;
+  for (const d of items) {
+    if (d.installed) {
+      console.log(`  adapter ${d.adapter}: installed${d.version ? ` (${d.version})` : ''}`);
+    } else {
+      blocked = true;
+      console.log(`  adapter ${d.adapter}: NOT available${d.error ? ` — ${d.error}` : ''}`);
+    }
+  }
+  if (blocked) {
+    console.log('\nreview preflight blocked（reviewer 不可用，不得 fallback 到其它 reviewer）');
+    return 1;
+  }
+  console.log('\nreview preflight PASS');
+  return 0;
+}
+
+/** speccraft reviews show <task-id>：查看某 Task 的 Review Gate 进展与证据绑定 */
+export async function cmdReviewsShow(taskId: string, projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir, runId } = await requireActiveRun(projectRoot);
+  const { reviewsShow } = await import('../core/reviews/diagnostics.js');
+  const summary = await reviewsShow(speccraftDir, runId, taskId);
+
+  console.log(`Task Reviews（run ${runId} / task ${summary.taskId}）：`);
+  if (summary.gates.length === 0) {
+    console.log('  （无 review attempt 证据）');
+    return 0;
+  }
+  console.log(
+    `  ${'Gate'.padEnd(13)} ${'Attempts'.padEnd(9)} ${'Decision'.padEnd(17)} ${'Reviewer'.padEnd(13)} ${'Adapter'.padEnd(10)} Findings`,
+  );
+  for (const g of summary.gates) {
+    console.log(
+      `  ${g.gateId.padEnd(13)} ${String(g.attempts).padEnd(9)} ${(g.latestDecision ?? '-').padEnd(17)} ${(
+        g.reviewer ?? '-'
+      ).padEnd(13)} ${(g.adapter ?? '-').padEnd(10)} ${g.findingCount ?? 0}（blocking ${g.blockingFindings ?? 0}）`,
+    );
+    if (g.sourceDispatchAttempt !== undefined || g.sourceVerificationAttempt !== undefined) {
+      console.log(
+        `    source: dispatch_attempt=${g.sourceDispatchAttempt ?? '-'} verification_attempt=${
+          g.sourceVerificationAttempt ?? '-'
+        }`,
+      );
+    }
+  }
   return 0;
 }
 

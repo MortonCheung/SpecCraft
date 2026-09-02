@@ -2,12 +2,9 @@
  * Review Diagnostics — reviews list / reviews plan / reviews doctor / reviews show（§27-§31）。
  */
 
-import { access, readFile, readdir, mkdir } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import yaml from 'js-yaml';
-import { runDir } from '../execution/store.js';
 import { tasksDir } from '../tasks/store.js';
-import { readReviewPlanOrNull } from './store.js';
 import { getAdapter } from '../execution/adapters/registry.js';
 import type { ReviewPlan, ReviewAttemptManifest } from './types.js';
 
@@ -15,11 +12,6 @@ export interface ReviewsListResult {
   enabled: boolean;
   gates: { id: string; kind: string; reviewer: string; adapter: string }[];
   reviewerProfiles: Record<string, { adapter: string; timeout?: number }>;
-}
-
-export async function reviewsList(speccraftDir: string): Promise<ReviewsListResult | null> {
-  const plan = await readReviewPlanOrNull(speccraftDir, '__latest__');
-  return null;
 }
 
 export function reviewsListFromPlan(plan: ReviewPlan | null): ReviewsListResult {
@@ -100,6 +92,8 @@ export interface TaskReviewSummary {
     adapter?: string;
     findingCount?: number;
     blockingFindings?: number;
+    sourceDispatchAttempt?: number;
+    sourceVerificationAttempt?: number;
   }[];
 }
 
@@ -142,6 +136,8 @@ export async function reviewsShow(
         adapter: latestManifest.adapter,
         findingCount: latestManifest.finding_count,
         blockingFindings: latestManifest.blocking_findings,
+        sourceDispatchAttempt: latestManifest.source_dispatch_attempt,
+        sourceVerificationAttempt: latestManifest.source_verification_attempt,
       } : {}),
     });
   }

@@ -254,15 +254,22 @@ async function runSingleReviewGate(
     await writeFile(path.join(attemptDir, 'diff.patch'), diffPatch, 'utf-8');
     await writeFile(path.join(attemptDir, 'reviewer-prompt.md'), prompt, 'utf-8');
 
-    // 7. Run review gate（calls adapter）
+    // 7. Run review gate（calls adapter；§57：绑定 source evidence）
     const runResult = await runReviewGate({
       projectRoot,
+      runId,
       runDir,
       task,
       gate,
       attemptNumber,
       prompt,
       reviewWorktreePath: worktreePath,
+      sourceDispatchAttempt,
+      sourceVerificationAttempt,
+      preTree,
+      postTree,
+      preCommit,
+      postCommit,
     });
 
     // 8. Check reviewer mutation（§44）

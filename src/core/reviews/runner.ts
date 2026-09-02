@@ -11,19 +11,27 @@ import { spawn } from 'node:child_process';
 import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { TaskDefinition } from '../tasks/types.js';
-import type { ReviewDecision, FrozenReviewGate } from './types.js';
+import type { ReviewDecision, FrozenReviewGate, ReviewAttemptManifest } from './types.js';
 import { parseReviewOutput, deriveReviewDecision } from './protocol.js';
 import { getAdapter } from '../execution/adapters/registry.js';
 import type { CliExecutionAdapter } from '../execution/adapters/types.js';
 
 export interface RunReviewGateOptions {
   projectRoot: string;
+  runId: string;
   runDir: string;
   task: TaskDefinition;
   gate: FrozenReviewGate;
   attemptNumber: number;
   prompt: string;
   reviewWorktreePath: string;
+  /** §57：Review Attempt 绑定来源 Dispatch / Verification attempt（旧 PASS 不能满足新证据） */
+  sourceDispatchAttempt: number;
+  sourceVerificationAttempt: number;
+  preTree: string;
+  postTree: string;
+  preCommit: string;
+  postCommit: string;
 }
 
 export interface RunReviewGateResult {
@@ -43,12 +51,19 @@ export interface RunReviewGateResult {
 export async function runReviewGate(options: RunReviewGateOptions): Promise<RunReviewGateResult> {
   const {
     projectRoot,
+    runId,
     runDir,
     task,
     gate,
     attemptNumber,
     prompt,
     reviewWorktreePath,
+    sourceDispatchAttempt,
+    sourceVerificationAttempt,
+    preTree,
+    postTree,
+    preCommit,
+    postCommit,
   } = options;
 
   const evidenceDir = path.join(runDir, 'tasks', task.id, 'reviews', gate.id);
@@ -155,14 +170,22 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
     decision = deriveReviewDecision(parsed.findings);
   }
 
-  const manifest = {
+  const manifest: ReviewAttemptManifest = {
     version: 1,
     attempt: attemptNumber,
+    run_id: runId,
+    task_id: task.id,
     gate_id: gate.id,
     gate_kind: gate.kind,
     reviewer_profile: gate.reviewer,
     adapter: gate.adapter,
     decision,
+    source_dispatch_attempt: sourceDispatchAttempt,
+    source_verification_attempt: sourceVerificationAttempt,
+    pre_tree: preTree,
+    post_tree: postTree,
+    pre_commit: preCommit,
+    post_commit: postCommit,
     started_at: startedAt,
     finished_at: finishedAt,
     finding_count: findingCount,

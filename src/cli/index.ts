@@ -29,6 +29,10 @@ import {
   cmdExecutorsList,
   cmdExecutorsPlan,
   cmdExecutorsDoctor,
+  cmdReviewsList,
+  cmdReviewsPlan,
+  cmdReviewsDoctor,
+  cmdReviewsShow,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -102,6 +106,10 @@ function usage(): string {
     '  executors list                  列出 Executor Profile（project.yaml）',
     '  executors plan                  查看当前 Run 的 frozen Executor Plan',
     '  executors doctor                probe Executor Plan 需要的 adapter（去重）',
+  '  reviews list                    列出 Review Gate / Kind / Reviewer / Adapter',
+  '  reviews plan                    查看当前 Run 的 frozen Review Plan',
+  '  reviews doctor                  probe Review Plan 需要的 adapter（去重）',
+  '  reviews show <task-id>          查看某 Task 的 Review 进展与证据绑定',
   ].join('\n');
 }
 
@@ -214,6 +222,18 @@ async function main(): Promise<number> {
         if (sub === 'plan') return await cmdExecutorsPlan();
         if (sub === 'doctor') return await cmdExecutorsDoctor();
         throw new Error('executors 需要 list | plan | doctor 子命令');
+      }
+      case 'reviews': {
+        const sub = args.positionals[0];
+        if (sub === 'list') return await cmdReviewsList();
+        if (sub === 'plan') return await cmdReviewsPlan();
+        if (sub === 'doctor') return await cmdReviewsDoctor();
+        if (sub === 'show') {
+          const id = args.positionals[1];
+          if (!id) throw new Error('reviews show 需要 task id：speccraft reviews show <task-id>');
+          return await cmdReviewsShow(id);
+        }
+        throw new Error('reviews 需要 list | plan | doctor | show 子命令');
       }
       case 'verify':
         return await cmdVerify();

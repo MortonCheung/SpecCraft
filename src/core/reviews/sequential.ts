@@ -129,15 +129,22 @@ export async function executeSequentialReviewGates(
       await writeFile(path.join(attemptDir, 'diff.patch'), diffPatch, 'utf-8');
       await writeFile(path.join(attemptDir, 'reviewer-prompt.md'), prompt, 'utf-8');
 
-      // run review gate（§62：fresh session，独立 Evidence Namespace）
+      // run review gate（§62：fresh session，独立 Evidence Namespace；§57：绑定 source evidence）
       const runResult = await runReviewGate({
         projectRoot,
+        runId,
         runDir: speccraftDir,
         task,
         gate,
         attemptNumber,
         prompt,
         reviewWorktreePath: wtPath,
+        sourceDispatchAttempt,
+        sourceVerificationAttempt,
+        preTree,
+        postTree,
+        preCommit,
+        postCommit,
       });
 
       // check reviewer mutation（§44）

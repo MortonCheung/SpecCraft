@@ -16,6 +16,10 @@ import type { ProjectConfig } from '../project.js';
 import { buildExecutorsContext } from '../executors/resolver.js';
 import { buildExecutorPlan } from '../executors/plan.js';
 import { writeExecutorPlan, hasExecutionEvidence } from '../executors/store.js';
+import { buildFrozenReviewPlan } from '../reviews/plan.js';
+import { writeReviewPlan, hasReviewEvidence } from '../reviews/store.js';
+import { validateReviewConfig } from '../reviews/config.js';
+import { listAdapterIds } from '../execution/adapters/registry.js';
 
 export interface CompileResult {
   graph: TaskGraph;
@@ -144,6 +148,25 @@ export async function compileTaskGraph(options: {
     const adapters = options.projectConfig.execution?.adapters ?? {};
     const plan = buildExecutorPlan(ctx, adapters, graph, options.now);
     await writeExecutorPlan(options.speccraftDir, options.runId, plan);
+
+    // ADR 0009 §18-§19：构建并持久化 frozen Review Plan（review enabled 时）
+    const reviewConfig = options.projectConfig.review;
+    if (reviewConfig?.enabled) {
+      if (await hasReviewEvidence(options.speccraftDir, options.runId)) {
+        throw new Error('cannot rebuild review plan after review evidence exists');
+      }
+      const knownAdapters = new Set(listAdapterIds());
+      validateReviewConfig(reviewConfig, knownAdapters);
+      const reviewPlan = buildFrozenReviewPlan({
+        runId: options.runId,
+        reviewConfig,
+        projectAdapters: adapters,
+        knownAdapters,
+      });
+      if (reviewPlan) {
+        await writeReviewPlan(options.speccraftDir, options.runId, reviewPlan);
+      }
+    }
   }
 
   // 落盘
