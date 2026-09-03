@@ -152,7 +152,7 @@ describe('M8.8 — §101 Malformed Reviewer Output', () => {
     assert.equal(parseReviewOutput(output), null);
   });
 
-  it('duplicate speccraft-review blocks → returns first block', () => {
+  it('duplicate speccraft-review blocks → null (fail-closed)', () => {
     const output = [
       '```speccraft-review',
       'version: 1',
@@ -165,8 +165,7 @@ describe('M8.8 — §101 Malformed Reviewer Output', () => {
       '```',
     ].join('\n');
     const parsed = parseReviewOutput(output);
-    assert.notEqual(parsed, null);
-    assert.equal(parsed?.summary, 'First block.');
+    assert.equal(parsed, null, 'Multiple machine blocks must be rejected');
   });
 
   it('wrong fence type (non-backtick) → null (ERROR)', () => {
@@ -190,6 +189,137 @@ describe('M8.8 — §101 Malformed Reviewer Output', () => {
     assert.notEqual(parsed, null);
     assert.equal(parsed?.summary, 'All good.');
     assert.deepEqual(parsed?.findings, []);
+  });
+
+  it('findings absent → empty array (allowed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: No issues found.',
+      '```',
+    ].join('\n');
+    const parsed = parseReviewOutput(output);
+    assert.notEqual(parsed, null);
+    assert.deepEqual(parsed?.findings, []);
+  });
+
+  it('findings: string → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Bad findings format.',
+      'findings: "not an array"',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('findings: number → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Bad findings format.',
+      'findings: 123',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('finding item is string → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Non-object finding.',
+      'findings:',
+      '  - "major bug"',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('finding item is number → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Non-object finding.',
+      'findings:',
+      '  - 42',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('finding item is null → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Null finding.',
+      'findings:',
+      '  - null',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('empty message → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Empty message.',
+      'findings:',
+      '  - severity: major',
+      '    category: correctness',
+      '    message: ""',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('whitespace-only message → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Whitespace message.',
+      'findings:',
+      '  - severity: major',
+      '    category: correctness',
+      '    message: "   "',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('invalid severity → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Invalid severity.',
+      'findings:',
+      '  - severity: critical',
+      '    category: correctness',
+      '    message: "Bad severity"',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('invalid category → null (fail-closed)', () => {
+    const output = [
+      '```speccraft-review',
+      'version: 1',
+      'summary: Invalid category.',
+      'findings:',
+      '  - severity: major',
+      '    category: bug',
+      '    message: "Bad category"',
+      '```',
+    ].join('\n');
+    assert.equal(parseReviewOutput(output), null);
+  });
+
+  it('zero blocks → null', () => {
+    const output = 'Just some text without any machine block.';
+    assert.equal(parseReviewOutput(output), null);
   });
 });
 

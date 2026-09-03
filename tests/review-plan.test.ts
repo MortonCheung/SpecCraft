@@ -263,10 +263,9 @@ describe('M8.4 — Structured Review Protocol', () => {
     assert.equal(out, null);
   });
 
-  it('multiple machine blocks → first matched only', () => {
+  it('multiple machine blocks → null (fail-closed)', () => {
     const out = parseReviewOutput('```speccraft-review\nversion: 1\nsummary: "first"\nfindings: []\n```\n\n```speccraft-review\nversion: 1\nsummary: "second"\nfindings: []\n```\n');
-    assert.ok(out);
-    assert.equal(out.summary, 'first');
+    assert.equal(out, null, 'Multiple machine blocks must be rejected');
   });
 
   it('version != 1 → null', () => {

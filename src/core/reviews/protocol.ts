@@ -18,11 +18,12 @@ import { isFindingSeverity, isFindingCategory } from './types.js';
  * 返回 null 表示未找到 / malformed（调用方应标记为 ERROR）。
  */
 export function parseReviewOutput(rawOutput: string): ReviewOutput | null {
-  const blockRegex = /```speccraft-review\s+([\s\S]*?)```/;
-  const match = rawOutput.match(blockRegex);
-  if (!match) return null;
+  // §修复：必须恰好一个 machine block（fail-closed）
+  const blockRegex = /```speccraft-review\s+([\s\S]*?)```/g;
+  const matches = [...rawOutput.matchAll(blockRegex)];
+  if (matches.length !== 1) return null;
 
-  const yamlText = match[1].trim();
+  const yamlText = matches[0][1].trim();
   let parsed: any;
   try {
     parsed = yaml.load(yamlText) as any;
@@ -35,12 +36,21 @@ export function parseReviewOutput(rawOutput: string): ReviewOutput | null {
   if (typeof parsed.summary !== 'string') return null;
 
   const findings: ReviewFinding[] = [];
-  if (Array.isArray(parsed.findings)) {
+
+  // §修复：findings 存在但非 array → ERROR（fail-closed）
+  if (parsed.findings !== undefined) {
+    if (!Array.isArray(parsed.findings)) return null;
+
     for (const f of parsed.findings) {
-      if (typeof f !== 'object' || f === null) continue;
+      // §修复：非 object finding → ERROR（fail-closed）
+      if (typeof f !== 'object' || f === null) return null;
+
       if (!isFindingSeverity(f.severity)) return null;
       if (!isFindingCategory(f.category)) return null;
-      if (typeof f.message !== 'string' || !f.message) return null;
+
+      // §修复：message 必须 non-empty trim（fail-closed）
+      if (typeof f.message !== 'string' || f.message.trim().length === 0) return null;
+
       findings.push({
         severity: f.severity as FindingSeverity,
         category: f.category as FindingCategory,
