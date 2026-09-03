@@ -4,7 +4,7 @@
  *
  * 通过环境变量控制行为，模拟一个 Provider CLI Agent 的非交互执行：
  *
- *   FAKE_AGENT_MODE = success | fail | timeout | jsonl | stream | work
+ *   FAKE_AGENT_MODE = success | fail | timeout | jsonl | stream | work | review-pass | review-major | review-observe
  *   FAKE_AGENT_SESSION = 输出的 session id（可选）
  *
  * 行为：
@@ -16,6 +16,11 @@
  *   work    → v0.6 parallel E2E 用：按 FAKE_AGENT_PLAN 在 cwd（isolated
  *             worktree）里真实写文件 / sleep / git commit / 越界写 /
  *             人为制造 canonical drift，然后输出 JSONL，exit 0
+ *   review-pass   → 输出 valid speccraft-review block (PASS), exit 0
+ *   review-major  → 输出 valid speccraft-review block (major finding), exit 0
+ *   review-observe → 读取 FAKE_AGENT_OBSERVE_MANIFEST 指定的 manifest，提取 status，
+ *                    写入 FAKE_AGENT_OBSERVATION_OUTPUT，
+ *                    然后根据 FAKE_AGENT_REVIEW_DECISION 输出 review PASS 或 MAJOR, exit 0
  *
  * work 模式的 FAKE_AGENT_PLAN（JSON，key = task id，从 stdin prompt 的
  * "- Task ID: <id>" 行解析）：
@@ -143,6 +148,61 @@ async function main() {
       }
 
       emitJsonl(session, `work done (task ${taskId})`);
+      process.exit(0);
+      return;
+    }
+    case 'review-pass': {
+      console.log('```speccraft-review');
+      console.log('version: 1');
+      console.log('summary: "Review passed."');
+      console.log('findings: []');
+      console.log('```');
+      process.exit(0);
+      return;
+    }
+    case 'review-major': {
+      console.log('```speccraft-review');
+      console.log('version: 1');
+      console.log('summary: "Blocking correctness issue."');
+      console.log('findings:');
+      console.log('  - severity: major');
+      console.log('    category: correctness');
+      console.log('    message: "The implementation violates the required behavior."');
+      console.log('```');
+      process.exit(0);
+      return;
+    }
+    case 'review-observe': {
+      const fs = await import('node:fs/promises');
+      const observeManifest = process.env.FAKE_AGENT_OBSERVE_MANIFEST;
+      const observeOutput = process.env.FAKE_AGENT_OBSERVATION_OUTPUT;
+      if (observeManifest && observeOutput) {
+        try {
+          const content = await fs.readFile(observeManifest, 'utf8');
+          const match = content.match(/status:\s*(\S+)/);
+          const status = match ? match[1] : 'parse_error';
+          await fs.writeFile(observeOutput, status, 'utf8');
+        } catch {
+          await fs.writeFile(observeOutput, 'read_error', 'utf8');
+        }
+      }
+      const reviewDecision = process.env.FAKE_AGENT_REVIEW_DECISION ?? 'pass';
+      if (reviewDecision === 'major') {
+        console.log('```speccraft-review');
+        console.log('version: 1');
+        console.log('summary: "Blocking correctness issue."');
+        console.log('findings:');
+        console.log('  - severity: major');
+        console.log('    category: correctness');
+        console.log('    message: "The implementation violates the required behavior."');
+        console.log('```');
+      } else {
+        console.log('```speccraft-review');
+        console.log('version: 1');
+        console.log('summary: "Review passed after observation."');
+        console.log('findings: []');
+        console.log('```');
+      }
       process.exit(0);
       return;
     }

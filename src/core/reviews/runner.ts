@@ -111,6 +111,12 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
       let err = '';
       let to = false;
 
+      // stdin 写入 prompt（与 dispatch runner 一致；不关闭 stdin 会导致读取 stdin 的 CLI 挂起）
+      if (invocation.stdin !== undefined) {
+        proc.stdin?.write(invocation.stdin);
+      }
+      proc.stdin?.end();
+
       const timer = timeoutMs > 0 ? setTimeout(() => {
         to = true;
         proc.kill('SIGTERM');

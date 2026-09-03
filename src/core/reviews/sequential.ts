@@ -133,7 +133,7 @@ export async function executeSequentialReviewGates(
       const runResult = await runReviewGate({
         projectRoot,
         runId,
-        runDir: speccraftDir,
+        runDir: path.join(speccraftDir, 'runs', runId),
         task,
         gate,
         attemptNumber,
