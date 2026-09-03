@@ -609,18 +609,15 @@ async function executeIsolatedTask(
         return fail('review', `delta computation failed: ${delta.error}`);
       }
 
-      const taskManifest = await readTaskManifest(speccraftDir, runId, taskId);
-      const sourceDispatchAttempt = taskManifest?.dispatchAttempts.length ?? 1;
-      const sourceVerificationAttempt = taskManifest?.verificationAttempts.length ?? 1;
-
+      // §Fix 2：使用 dispatch/verify 实际返回的 attempt，不再从 stale manifest 推导
       const reviewResult = await executeSequentialReviewGates({
         projectRoot: ctx.workspaceRoot,
         speccraftDir,
         runId,
         task,
         gates: options.reviewPlan.gates,
-        sourceDispatchAttempt,
-        sourceVerificationAttempt,
+        sourceDispatchAttempt: d.attempt,
+        sourceVerificationAttempt: v.attempt,
         preTree: preTreeTreeId,
         postTree: postSnap.treeId,
         preCommit: preTreeCommit,

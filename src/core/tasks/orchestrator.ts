@@ -130,12 +130,14 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
     }
 
     // verify（task in_progress → completed/failed）
+    // §Fix 1：review-enabled 时 verification PASS 不能提前 completed
     const v = await verifyTask({
       speccraftDir,
       projectRoot: options.projectRoot,
       runId,
       taskId: next,
       verification: task.verification,
+      ...(reviewEnabled ? { completeOnPass: false } : {}),
     });
     if (!v.passed) {
       return { complete: false, reason: 'verify_failed', completedTasks: countCompleted(graph, statuses), executed };
@@ -163,19 +165,15 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
         return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
       }
 
-      // get source dispatch / verification attempt numbers for binding
-      const manifest = manifests.get(next);
-      const sourceDispatchAttempt = manifest?.dispatchAttempts.length ?? 1;
-      const sourceVerificationAttempt = manifest?.verificationAttempts.length ?? 1;
-
+      // §Fix 2：使用 dispatch/verify 实际返回的 attempt，不再从 stale manifest 推导
       const reviewResult = await executeSequentialReviewGates({
         projectRoot: options.projectRoot,
         speccraftDir,
         runId,
         task,
         gates: options.reviewPlan.gates,
-        sourceDispatchAttempt,
-        sourceVerificationAttempt,
+        sourceDispatchAttempt: d.attempt,
+        sourceVerificationAttempt: v.attempt,
         preTree: preTree!,
         postTree: post.treeId,
         preCommit: preCommit!,
@@ -192,6 +190,14 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
           await writeTaskManifest(speccraftDir, runId, taskManifest);
         }
         return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+
+      // §Fix 1：Review PASS → 显式完成 Task（重新读取 manifest，确保 source of truth）
+      const taskManifestAfterReview = await import('./store.js').then((m) => m.readTaskManifest(speccraftDir, runId, next));
+      if (taskManifestAfterReview && taskManifestAfterReview.status === 'in_progress') {
+        taskManifestAfterReview.status = 'completed';
+        taskManifestAfterReview.lastError = undefined;
+        await writeTaskManifest(speccraftDir, runId, taskManifestAfterReview);
       }
     }
 
