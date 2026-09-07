@@ -19,7 +19,7 @@ import path from 'node:path';
 import type { TaskDefinition } from '../tasks/types.js';
 import type { FrozenReviewGate, ReviewDecision } from './types.js';
 import { reviewEvidenceDir, reviewWorktreePath } from './paths.js';
-import { createReviewWorktree, removeReviewWorktree, checkReviewerMutation } from './snapshot.js';
+import { createReviewWorktree, removeReviewWorktree } from './snapshot.js';
 import { prepareReviewPackage, buildReviewerPrompt } from './package.js';
 import { runReviewGate } from './runner.js';
 
@@ -147,14 +147,8 @@ export async function executeSequentialReviewGates(
         postCommit,
       });
 
-      // check reviewer mutation（§44）
-      const mutationCheck = await checkReviewerMutation(wtPath);
-      if (!mutationCheck.clean) {
-        const error = `reviewer mutation detected: ${mutationCheck.output}`;
-        gateResults.push({ gateId: gate.id, decision: 'error', attemptNumber });
-        return { decision: 'error', error, gateResults };
-      }
-
+      // §44 + §6.2：mutation guard 已由 runner finalization 在写 manifest 前置执行
+      // （mutation → decision=error + error_code=reviewer_mutation），这里只消费最终结果。
       gateResults.push({ gateId: gate.id, decision: runResult.decision, attemptNumber });
 
       // §69：任何 gate CHANGES_REQUIRED / ERROR → 立即停止

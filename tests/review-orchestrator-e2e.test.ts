@@ -31,6 +31,7 @@ import { executeTaskGraph } from '../src/core/tasks/orchestrator.js';
 import { readTaskManifest } from '../src/core/tasks/store.js';
 import { readReviewManifestOrNull } from '../src/core/reviews/attempt.js';
 import { readReviewPlanOrNull } from '../src/core/reviews/store.js';
+import { reviewWorktreePath } from '../src/core/reviews/paths.js';
 import { loadProjectConfig } from '../src/core/project.js';
 import type { CliExecutionAdapter, NormalizedDispatchResult } from '../src/core/execution/adapters/types.js';
 import type { Workflow, State } from '../src/core/types.js';
@@ -148,7 +149,7 @@ function makeFakeExecutor(mode: string, opts?: { plan?: Record<string, unknown> 
   };
 }
 
-function makeFakeReviewer(mode: string, opts?: { observeManifest?: string; observeOutput?: string; reviewDecision?: string }): CliExecutionAdapter {
+function makeFakeReviewer(mode: string, opts?: { observeManifest?: string; observeOutput?: string; reviewDecision?: string; reviewFile?: string }): CliExecutionAdapter {
   return {
     id: 'fake-reviewer',
     kind: 'cli',
@@ -165,6 +166,7 @@ function makeFakeReviewer(mode: string, opts?: { observeManifest?: string; obser
         ...(opts?.observeManifest ? { FAKE_AGENT_OBSERVE_MANIFEST: opts.observeManifest } : {}),
         ...(opts?.observeOutput ? { FAKE_AGENT_OBSERVATION_OUTPUT: opts.observeOutput } : {}),
         ...(opts?.reviewDecision ? { FAKE_AGENT_REVIEW_DECISION: opts.reviewDecision } : {}),
+        ...(opts?.reviewFile ? { FAKE_AGENT_REVIEW_FILE: opts.reviewFile } : {}),
       },
       timeoutMs: 10000,
     }),
@@ -434,4 +436,75 @@ test('Test E — review-disabled legacy regression (verify PASS → completed di
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+/**
+ * E2E D/E — Reviewer Mutation（spec v0.8 §6.2/§7）。
+ *
+ * Reviewer 修改 review worktree（dirty 或 commit）即使输出 PASS，最终也必须：
+ *   - executeTaskGraph → review_failed（Task failed）
+ *   - attempt manifest decision == error + error_code == reviewer_mutation
+ *   - raw evidence（stdout/stderr/raw-output）保留
+ *   - review worktree 被清理
+ */
+async function assertReviewerMutationBlocked(
+  mode: 'review-dirty' | 'review-commit',
+  reviewFile?: string,
+): Promise<void> {
+  const { root, speccraftDir, runId } = await makeReadyProject(REVIEW_ENABLED_YAML);
+  try {
+    await compileTaskGraphForRun(speccraftDir, runId);
+
+    const graph = await readTaskGraph(speccraftDir, runId);
+    const taskId = graph.tasks[0].id;
+
+    const workPlan = makeValueWritePlan(taskId, 'v2');
+    registerAdapter(makeFakeExecutor('work', { plan: workPlan }));
+    registerAdapter(makeFakeReviewer(mode, reviewFile ? { reviewFile } : undefined));
+
+    await mkdir(path.join(root, 'src', 'a'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'a', 'value.txt'), 'v1', 'utf8');
+
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    assert.ok(reviewPlan, 'Frozen review plan must exist');
+
+    const result = await executeTaskGraph({
+      speccraftDir, projectRoot: root, runId,
+      adapter: makeFakeExecutor('work', { plan: workPlan }),
+      runContext: 'test', executionGuard: 'test',
+      reviewPlan: reviewPlan!,
+    });
+
+    // Runtime 必须把 mutation 视为 ERROR（不因 Reviewer 输出 PASS 而放行）
+    assert.equal(result.complete, false, 'Task must not complete after reviewer mutation');
+    assert.equal(result.reason, 'review_failed', 'Reviewer mutation must fail the review');
+
+    const taskManifest = await readTaskManifest(speccraftDir, runId, taskId);
+    assert.equal(taskManifest?.status, 'failed', 'Task must be failed after reviewer mutation');
+
+    const attemptDir = path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'reviews', 'spec_compliance', 'attempt-001');
+    const manifest = await readReviewManifestOrNull(attemptDir);
+    assert.ok(manifest, 'Review attempt-001 manifest must exist');
+    assert.equal(manifest!.decision, 'error', 'manifest decision must be error（覆盖 reviewer PASS）');
+    assert.equal(manifest!.error_code, 'reviewer_mutation', 'manifest must carry structured error_code');
+    assert.ok(manifest!.error_message && manifest!.error_message.length > 0, 'manifest must carry error detail');
+
+    // §6.2：raw evidence 必须保留（stdout / stderr / raw-output / prompt / diff）
+    const rawOutput = await readFile(path.join(attemptDir, 'raw-output.txt'), 'utf8');
+    assert.ok(rawOutput.includes('speccraft-review'), 'raw reviewer output must be preserved');
+
+    // review workspace removed（cleanup 必须执行）
+    const wtPath = reviewWorktreePath(root, runId, taskId, 'spec_compliance', 1);
+    await assert.rejects(access(wtPath), 'Review worktree must be removed after the attempt');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test('E2E D — Reviewer Dirty Mutation → reviewer_mutation ERROR（Reviewer 输出 PASS 也无效）', async () => {
+  await assertReviewerMutationBlocked('review-dirty');
+});
+
+test('E2E E — Reviewer Commit Mutation → reviewer_mutation ERROR（HEAD drift guard）', async () => {
+  await assertReviewerMutationBlocked('review-commit');
 });

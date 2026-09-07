@@ -18,6 +18,8 @@
  *             人为制造 canonical drift，然后输出 JSONL，exit 0
  *   review-pass   → 输出 valid speccraft-review block (PASS), exit 0
  *   review-major  → 输出 valid speccraft-review block (major finding), exit 0
+ *   review-dirty  → 在 cwd（review worktree）真实修改文件（不 commit），仍输出 PASS —— 测试 dirty mutation guard
+ *   review-commit → 在 cwd 修改文件 + git add + git commit，仍输出 PASS —— 测试 HEAD drift guard
  *   review-observe → 读取 FAKE_AGENT_OBSERVE_MANIFEST 指定的 manifest，提取 status，
  *                    写入 FAKE_AGENT_OBSERVATION_OUTPUT，
  *                    然后根据 FAKE_AGENT_REVIEW_DECISION 输出 review PASS 或 MAJOR, exit 0
@@ -168,6 +170,38 @@ async function main() {
       console.log('  - severity: major');
       console.log('    category: correctness');
       console.log('    message: "The implementation violates the required behavior."');
+      console.log('```');
+      process.exit(0);
+      return;
+    }
+    case 'review-dirty': {
+      // Reviewer Mutation E2E（dirty）：真实修改 review worktree 内文件，不 commit，
+      // 但仍输出 PASS —— Runtime 必须用 reviewer_mutation ERROR 覆盖 PASS。
+      const dirtyRel = process.env.FAKE_AGENT_REVIEW_FILE ?? 'src/a/value.txt';
+      const dirtyAbs = path.resolve(process.cwd(), dirtyRel);
+      await mkdir(path.dirname(dirtyAbs), { recursive: true });
+      await writeFile(dirtyAbs, 'reviewer-mutated\n', 'utf8');
+      console.log('```speccraft-review');
+      console.log('version: 1');
+      console.log('summary: "Review passed."');
+      console.log('findings: []');
+      console.log('```');
+      process.exit(0);
+      return;
+    }
+    case 'review-commit': {
+      // Reviewer Mutation E2E（commit）：修改 + git add + git commit 后再输出 PASS。
+      // 此时 status --porcelain 干净，但 HEAD 漂移 → Runtime 必须仍 ERROR（HEAD drift guard）。
+      const commitRel = process.env.FAKE_AGENT_REVIEW_FILE ?? 'src/a/value.txt';
+      const commitAbs = path.resolve(process.cwd(), commitRel);
+      await mkdir(path.dirname(commitAbs), { recursive: true });
+      await writeFile(commitAbs, 'reviewer-committed\n', 'utf8');
+      runGit(process.cwd(), ['add', '-A']);
+      runGit(process.cwd(), ['commit', '-m', 'reviewer mutation']);
+      console.log('```speccraft-review');
+      console.log('version: 1');
+      console.log('summary: "Review passed."');
+      console.log('findings: []');
       console.log('```');
       process.exit(0);
       return;

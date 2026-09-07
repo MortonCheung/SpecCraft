@@ -15,6 +15,7 @@ import type { ReviewDecision, FrozenReviewGate, ReviewAttemptManifest } from './
 import { parseReviewOutput, deriveReviewDecision } from './protocol.js';
 import { getAdapter } from '../execution/adapters/registry.js';
 import type { CliExecutionAdapter } from '../execution/adapters/types.js';
+import { checkReviewerMutation } from './snapshot.js';
 
 export interface RunReviewGateOptions {
   projectRoot: string;
@@ -44,9 +45,10 @@ export interface RunReviewGateResult {
  * 运行单个 Review Gate 的 Review Attempt。
  *
  * 1. spawn adapter（fresh session）
- * 2. collect stdout + stderr
+ * 2. collect stdout + stderr（raw evidence，先落盘以便保留）
  * 3. parse protocol block
- * 4. write findings.yaml + manifest.yaml
+ * 4. reviewer mutation guard（dirty / HEAD drift）→ decision=error + error_code=reviewer_mutation
+ * 5. write final manifest ONCE（manifest.decision 必须是整个 attempt 的最终 Runtime decision）
  */
 export async function runReviewGate(options: RunReviewGateOptions): Promise<RunReviewGateResult> {
   const {
@@ -153,6 +155,7 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
   let findingCount = 0;
   let blockingFindings = 0;
   let errorMessage: string | undefined;
+  let errorCode: string | undefined;
 
   if (spawnError) {
     decision = 'error';
@@ -176,6 +179,18 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
     decision = deriveReviewDecision(parsed.findings);
   }
 
+  // §6/§7：Reviewer Mutation Guard —— 必须在写最终 manifest 之前执行。
+  // 只检查 dirty（status --porcelain 非空）不够：reviewer 可 commit 后 status 变干净，
+  // 因此同时核对 HEAD == postCommit（review worktree checkout 的 commit）。
+  // 任何 mutation（dirty 或 HEAD drift）→ decision=error + error_code=reviewer_mutation，
+  // 禁止出现“磁盘 manifest PASS + 运行时 ERROR”不一致。
+  const mutationCheck = await checkReviewerMutation(reviewWorktreePath, postCommit);
+  if (!mutationCheck.clean) {
+    decision = 'error';
+    errorCode = 'reviewer_mutation';
+    errorMessage = mutationCheck.output;
+  }
+
   const manifest: ReviewAttemptManifest = {
     version: 1,
     attempt: attemptNumber,
@@ -197,6 +212,7 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
     finding_count: findingCount,
     blocking_findings: blockingFindings,
     ...(errorMessage ? { error_message: errorMessage } : {}),
+    ...(errorCode ? { error_code: errorCode } : {}),
   };
 
   await writeFile(path.join(attemptDir, 'manifest.yaml'),
