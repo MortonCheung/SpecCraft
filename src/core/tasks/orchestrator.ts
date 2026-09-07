@@ -148,8 +148,9 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
       const { captureTreeSnapshot, computeExactDelta } = await import('../reviews/snapshot.js');
       const { executeSequentialReviewGates } = await import('../reviews/sequential.js');
 
-      // capture postTree
-      const post = await captureTreeSnapshot(options.projectRoot, `post-${next}`, `Review post-snapshot: ${next}`);
+      // capture postTree（§4：postCommit 必须以 preCommit 为 parent，
+      // review worktree 才能满足 HEAD^ == preCommit、git diff HEAD^ HEAD == exact delta）
+      const post = await captureTreeSnapshot(options.projectRoot, `post-${next}`, `Review post-snapshot: ${next}`, preCommit!);
       if (!post.ok) {
         return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
       }

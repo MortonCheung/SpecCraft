@@ -104,7 +104,7 @@ async function makeReadyProject(projectYaml: string): Promise<{ root: string; sp
   return { root, speccraftDir, runId };
 }
 
-function makeFakeExecutor(mode: string): CliExecutionAdapter {
+function makeFakeExecutor(mode: string, opts?: { plan?: Record<string, unknown> }): CliExecutionAdapter {
   return {
     id: 'fake-executor',
     kind: 'cli',
@@ -116,7 +116,13 @@ function makeFakeExecutor(mode: string): CliExecutionAdapter {
       args: [fakeAgentPath],
       cwd: input.projectRoot,
       stdin: input.prompt,
-      env: { FAKE_AGENT_MODE: mode, FAKE_AGENT_SESSION: `exec-${Math.random().toString(16).slice(2, 6)}` },
+      env: {
+        FAKE_AGENT_MODE: mode,
+        FAKE_AGENT_SESSION: `exec-${Math.random().toString(16).slice(2, 6)}`,
+        // v0.8：exact delta 不含 .speccraft/**，executor 必须真实写入工作区文件
+        // 才能让 pre/post tree 产生非空 diff（否则 review 命中 no_changes → review_failed）
+        ...(opts?.plan ? { FAKE_AGENT_PLAN: JSON.stringify(opts.plan) } : {}),
+      },
       timeoutMs: 10000,
     }),
     normalize: async (input): Promise<NormalizedDispatchResult> => {
@@ -187,6 +193,11 @@ const REVIEW_ENABLED_YAML = [
 
 const REVIEW_DISABLED_YAML = 'version: 1\nexecution: { mode: sequential }\n';
 
+/** 构造 fake-agent work plan：真实改写工作区文件，令 exact delta（pre/post tree）非空 */
+function makeValueWritePlan(taskId: string, content: string): Record<string, unknown> {
+  return { [taskId]: { write: { 'src/a/value.txt': content } } };
+}
+
 async function compileTaskGraphForRun(speccraftDir: string, runId: string): Promise<void> {
   const { registerAdapter } = await import('../src/core/execution/adapters/registry.js');
   const { manualAdapter } = await import('../src/core/execution/adapters/manual.js');
@@ -207,7 +218,8 @@ test('Test A — Reviewer observes Task status = in_progress during review', asy
     const taskId = graph.tasks[0].id;
     const taskManifestPath = path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'manifest.yaml');
 
-    registerAdapter(makeFakeExecutor('work'));
+    const workPlan = makeValueWritePlan(taskId, 'v2');
+    registerAdapter(makeFakeExecutor('work', { plan: workPlan }));
     registerAdapter(makeFakeReviewer('review-observe', { observeManifest: taskManifestPath, observeOutput: observationFile }));
 
     await mkdir(path.join(root, 'src', 'a'), { recursive: true });
@@ -219,7 +231,7 @@ test('Test A — Reviewer observes Task status = in_progress during review', asy
 
     const result = await executeTaskGraph({
       speccraftDir, projectRoot: root, runId,
-      adapter: makeFakeExecutor('work'),
+      adapter: makeFakeExecutor('work', { plan: workPlan }),
       runContext: 'test', executionGuard: 'test',
       reviewPlan: reviewPlan!,
     });
@@ -246,7 +258,8 @@ test('Test B — Review FAIL transitions from in_progress to failed', async () =
     const taskId = graph.tasks[0].id;
     const taskManifestPath = path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'manifest.yaml');
 
-    registerAdapter(makeFakeExecutor('work'));
+    const workPlan = makeValueWritePlan(taskId, 'v2');
+    registerAdapter(makeFakeExecutor('work', { plan: workPlan }));
     registerAdapter(makeFakeReviewer('review-observe', { observeManifest: taskManifestPath, observeOutput: observationFile, reviewDecision: 'major' }));
 
     await mkdir(path.join(root, 'src', 'a'), { recursive: true });
@@ -257,7 +270,7 @@ test('Test B — Review FAIL transitions from in_progress to failed', async () =
 
     const result = await executeTaskGraph({
       speccraftDir, projectRoot: root, runId,
-      adapter: makeFakeExecutor('work'),
+      adapter: makeFakeExecutor('work', { plan: workPlan }),
       runContext: 'test', executionGuard: 'test',
       reviewPlan: reviewPlan!,
     });
@@ -283,7 +296,8 @@ test('Test C — first round evidence binding (dispatch=1, verify=1)', async () 
     const graph = await readTaskGraph(speccraftDir, runId);
     const taskId = graph.tasks[0].id;
 
-    registerAdapter(makeFakeExecutor('work'));
+    const workPlan = makeValueWritePlan(taskId, 'v2');
+    registerAdapter(makeFakeExecutor('work', { plan: workPlan }));
     registerAdapter(makeFakeReviewer('review-pass'));
 
     await mkdir(path.join(root, 'src', 'a'), { recursive: true });
@@ -294,7 +308,7 @@ test('Test C — first round evidence binding (dispatch=1, verify=1)', async () 
 
     await executeTaskGraph({
       speccraftDir, projectRoot: root, runId,
-      adapter: makeFakeExecutor('work'),
+      adapter: makeFakeExecutor('work', { plan: workPlan }),
       runContext: 'test', executionGuard: 'test',
       reviewPlan: reviewPlan!,
     });
@@ -321,7 +335,8 @@ test('Test D — retry evidence binding (dispatch=2, verify=2)', async () => {
     const graph = await readTaskGraph(speccraftDir, runId);
     const taskId = graph.tasks[0].id;
 
-    registerAdapter(makeFakeExecutor('work'));
+    const firstWorkPlan = makeValueWritePlan(taskId, 'v2');
+    registerAdapter(makeFakeExecutor('work', { plan: firstWorkPlan }));
     registerAdapter(makeFakeReviewer('review-major'));
 
     await mkdir(path.join(root, 'src', 'a'), { recursive: true });
@@ -332,7 +347,7 @@ test('Test D — retry evidence binding (dispatch=2, verify=2)', async () => {
 
     const result1 = await executeTaskGraph({
       speccraftDir, projectRoot: root, runId,
-      adapter: makeFakeExecutor('work'),
+      adapter: makeFakeExecutor('work', { plan: firstWorkPlan }),
       runContext: 'test', executionGuard: 'test',
       reviewPlan: reviewPlan!,
     });
@@ -356,9 +371,10 @@ test('Test D — retry evidence binding (dispatch=2, verify=2)', async () => {
     await writeFile(path.join(root, 'src', 'a', 'value.txt'), 'v2', 'utf8');
 
     // 同一 Run 内重试（executeTaskGraph 对非 prepared run 跳过 implementStart）
+    const secondWorkPlan = makeValueWritePlan(taskId, 'v3');
     const result2 = await executeTaskGraph({
       speccraftDir, projectRoot: root, runId,
-      adapter: makeFakeExecutor('work'),
+      adapter: makeFakeExecutor('work', { plan: secondWorkPlan }),
       runContext: 'test', executionGuard: 'test',
       reviewPlan: reviewPlan!,
     });

@@ -595,7 +595,12 @@ async function executeIsolatedTask(
       const { captureTreeSnapshot, computeExactDelta } = await import('../reviews/snapshot.js');
       const { executeSequentialReviewGates } = await import('../reviews/sequential.js');
 
-      const postSnap = await captureTreeSnapshot(ctx.workspaceRoot, `post-${taskId}`, `Review post-snapshot: ${taskId}`);
+      const postSnap = await captureTreeSnapshot(
+        ctx.workspaceRoot,
+        `post-${taskId}`,
+        `Review post-snapshot: ${taskId}`,
+        preTreeCommit, // §4：postCommit 以 preCommit 为 parent → HEAD^ == preCommit
+      );
       if (!postSnap.ok) {
         return fail('review', `capture postTree failed: ${postSnap.error}`);
       }
