@@ -1,58 +1,17 @@
-# SpecCraft v0.8 — Independent Review Gates & Evidence-Driven Code Review
-## Agent 全程施工执行手册
+# SpecCraft v0.8 — Final Integrity Hardening
+## 最终完整性加固施工指令
 
-你现在负责 SpecCraft v0.8 的完整施工。
+你现在接手 SpecCraft v0.8 的最终完整性加固。
 
-本轮不是简单增加一个“Reviewer Agent”。
+本轮不是增加新功能，不进入 v0.9，也不是继续围绕已有测试做局部修补。
 
-真正目标是：
+你的任务是：
 
-> 在现有 Task Execution / Verification / Worktree / Multi-Executor Runtime 中加入独立、结构化、可审计的 Review Gate，使 Executor 的施工结果必须经过 Verification 和独立 Review，才能被视为 Task 完成或进入 canonical integration。
-
-Review 不拥有产品设计权。
-
-Review 不重新规划 Task。
-
-Review 不修改代码。
-
-Review 不替代 Verification。
-
-Review 不替代 Owner Acceptance。
-
-正式生命周期：
-
-```text
-Task Contract
-↓
-Executor
-↓
-Task Verification
-↓
-Independent Review
-↓
-PASS
-↓
-Sequential: Task completed
-
-Parallel:
-Runtime Commit
-↓
-Integration
-↓
-Task completed
-```
-
-最高原则：
-
-> Verification proves that the implementation runs.
-
-> Review evaluates whether the verified implementation satisfies its contract and quality bar.
-
-> Owner Acceptance remains the final human authority.
+> 以当前 `feat/v0.8-independent-review-gates` 分支为真实基线，对 v0.8 Independent Review Gates 的 Snapshot、Evidence、Parallel Runtime、Preflight、Validation、Handoff、Hooks 和权威 E2E 做最后一次系统性收口，使实现真正满足 `SpecCraft v0.8.md` 已冻结的设计，而不是仅让已有测试通过。
 
 ---
 
-# 0. 开工基线
+# 0. 当前基线
 
 远端：
 
@@ -60,29 +19,113 @@ Task completed
 https://github.com/MortonCheung/SpecCraft.git
 ```
 
-预期基线：
-
-```text
-branch:
-feat/v0.7-multi-executor-routing
-
-HEAD:
-5df7a13e5a4be47dad77ac6e0bf2fe3972fe49ed
-```
-
-新分支：
+当前目标分支：
 
 ```text
 feat/v0.8-independent-review-gates
 ```
 
-必须从：
+当前已知远端 HEAD：
 
 ```text
-feat/v0.7-multi-executor-routing
+84c82e6efe63041814599b0bb661eddb12ebbffa
 ```
 
-创建。
+这个提交已经完成：
+
+```text
+Sequential Review 主链
+Reviewer stdin 修复
+Review evidence path 修复
+Review FAIL → Task failed
+Review PASS completion gate
+Dispatch / Verification evidence binding
+同 Run retry attempt binding
+Review disabled legacy regression
+```
+
+已有新增真实 E2E：
+
+```text
+Test A
+Reviewer 在 Review 时观察 Task = in_progress
+
+Test B
+Review FAIL：
+in_progress → failed
+
+Test C
+首轮 Review evidence：
+source_dispatch_attempt = 1
+source_verification_attempt = 1
+
+Test D
+同 Run retry：
+dispatch = 2
+verification = 2
+review attempt = attempt-002
+
+Test E
+Review disabled：
+Verification PASS → completed
+```
+
+上一轮报告：
+
+```text
+477/477 tests PASS
+typecheck PASS
+build PASS
+```
+
+但这不能视为 v0.8 DoD 已完成。
+
+当前已经确认仍有系统级缺口。
+
+---
+
+# 1. 本轮最高原则
+
+不要围着现有测试打补丁。
+
+必须：
+
+```text
+先修语义
+再修实现
+再补真实 E2E
+最后重新跑 DoD
+```
+
+禁止：
+
+```text
+为了让测试通过修改测试期望
+删除失败测试
+降低 invariant
+把 ERROR 改成 warning
+绕过 Parallel Review
+用 mock 替代本应真实执行的 Git 行为
+只验证 helper、不验证 orchestrator
+```
+
+如果测试暴露产品 Bug：
+
+```text
+修产品代码
+```
+
+如果发现旧实现已经与冻结规格冲突：
+
+```text
+以 SpecCraft v0.8.md 为准
+```
+
+但不要扩展 v0.8 范围，不新增未经设计的新能力。
+
+---
+
+# 2. 开工前必须重新 Site Survey
 
 先执行：
 
@@ -92,1169 +135,381 @@ git branch --show-current
 git rev-parse HEAD
 git remote -v
 git fetch origin
+git rev-parse origin/feat/v0.8-independent-review-gates
+```
 
-npm test
+确认：
+
+```text
+local HEAD
+=
+origin/feat/v0.8-independent-review-gates
+=
+84c82e6...
+```
+
+如果远端已有更新：
+
+```text
+立即以真实远端最新 HEAD 为基线重新审阅
+不要机械 reset 到 84c82e6
+```
+
+然后先跑：
+
+```bash
+npm test -- --test-concurrency=2
 npm run typecheck
 npm run build
+git diff --check
 ```
 
-已知上一版本最终基线：
+确认当前基线。
+
+不要先改代码。
+
+重新阅读至少：
 
 ```text
-344 tests PASS
-typecheck PASS
-build PASS
-```
+SpecCraft v0.8.md
+docs/decisions/0009-independent-review-gates.md
 
-实际开工必须重新核验，不得机械假设 344。
-
-如果：
-
-```text
-SpecCraft v0.7.md
-```
-
-仍作为未跟踪施工手册存在：
-
-不要删除。
-
-不要提交。
-
-不要加入项目源码。
-
----
-
-# 1. 开工 Site Survey
-
-开始编码以前重新阅读真实仓库。
-
-至少检查：
-
-```text
-src/core/project.ts
+src/core/reviews/
+├── snapshot.ts
+├── runner.ts
+├── sequential.ts
+├── lifecycle.ts
+├── package.ts
+├── feedback.ts
+├── attempt.ts
+├── preflight.ts
+├── plan.ts
+├── store.ts
+├── paths.ts
+├── diagnostics.ts
+└── types.ts
 
 src/core/tasks/
-├── types.ts
-├── compiler.ts
-├── store.ts
-├── dispatch.ts
 ├── orchestrator.ts
+├── scope.ts
+├── rework.ts
+├── store.ts
 └── verification/
 
 src/core/parallel/
 ├── orchestrator.ts
-├── planner.ts
-├── types.ts
-└── store.ts
+└── ...
 
 src/core/workspaces/
-src/core/executors/
-src/core/dispatch/
+├── git.ts
+├── store.ts
+└── ...
+
 src/core/execution/adapters/
+├── types.ts
+├── registry.ts
+└── runner / adapters
+
 src/core/hooks/
 src/core/handoff/
+src/core/init.ts
+src/cli/commands.ts
 
-src/cli/
-skills/
 tests/
-
-README.md
-docs/executor-routing.md
-docs/parallel-execution.md
-docs/worktree-isolation.md
-
-docs/decisions/0006-*
-docs/decisions/0007-*
-docs/decisions/0008-*
 ```
 
-重点确认以下真实事实：
+特别核对下面每一个问题仍是否存在。
+
+如果真实代码已发生变化：
 
 ```text
-sequential:
-dispatch
-→ verify
-→ completed
-
-parallel:
-dispatch
-→ scope audit
-→ verify completeOnPass=false
-→ scope audit
-→ git mutation guard
-→ runtime commit
-→ integration
-→ completed
-```
-
-确认 v0.7：
-
-```text
-Executor Assignment
-Provider Session
-Workspace Attempt
-Dispatch Attempt
-```
-
-真实结构与施工手册是否一致。
-
-发现普通 Bug：
-
-在对应 Milestone 直接修。
-
-禁止人为制造：
-
-```text
-M8.x Bug Fix
-```
-
-产品 Milestone。
-
----
-
-# 2. v0.8 的 Review 边界
-
-必须始终满足：
-
-```text
-Review ≠ Verification
-
-Review ≠ Owner Acceptance
-
-Reviewer ≠ Executor
-
-Reviewer Profile ≠ Executor Profile
-
-Reviewer Profile ≠ Adapter
-
-Review Attempt ≠ Dispatch Attempt
-
-Review Attempt ≠ Verification Attempt
-
-Review Gate ≠ Workflow Stage
-```
-
-仍然：
-
-```text
-16 Workflow Stages
-```
-
-不得增加：
-
-```text
-review
-code-review
-review-approval
-```
-
-Workflow Stage。
-
-Review 属于：
-
-```text
-Implementation Stage
-└── Execution Run
-    └── Task
-        └── Review Gate
+以现场代码为准
+但必须解释差异
 ```
 
 ---
 
-# 3. Task Status 不扩展
+# 3. P0 — 重做 Exact Task Snapshot Foundation
 
-继续只有：
+这是本轮第一优先级。
 
-```text
-pending
-ready
-in_progress
-completed
-failed
-blocked
+当前 Snapshot 不能继续建立在：
+
+```ts
+path.join(workspaceRoot, '.git')
 ```
 
-禁止新增：
+这种假设上。
 
-```text
-reviewing
-review_failed
-awaiting_review
-approved
-changes_required
+原因：
+
+Parallel workspace 使用：
+
+```bash
+git worktree add
 ```
 
-这些不是 Task Status。
+linked worktree 的：
 
-Review 有自己的 Evidence / Decision。
+```text
+<workspace>/.git
+```
+
+通常是一个 gitfile，而不是目录。
+
+因此这种：
+
+```text
+<workspace>/.git/review-pre.index
+```
+
+不能作为 alternate index 路径。
 
 ---
 
-# 4. Task completed 新统一语义
+## 3.1 Alternate Index 必须 Worktree-safe
 
-v0.8 起：
+重新设计：
 
-> Task completed = 当前施工结果已经满足该 route 的全部 required completion gates。
-
-如果 Review disabled：
-
-保持 v0.7 行为。
-
-Sequential：
-
-```text
-Verification PASS
-→ completed
+```ts
+captureTreeSnapshot()
 ```
 
-Review enabled 时：
+不要假设：
 
 ```text
-Verification PASS
-↓
-所有 Required Review Gates PASS
-↓
-completed
+workspaceRoot/.git
 ```
 
-Parallel：
+是目录。
+
+推荐方案：
+
+Runtime-owned alternate index 放在：
 
 ```text
-Verification PASS
-↓
-所有 Required Review Gates PASS
-↓
-Runtime Commit
-↓
-Integration PASS
-↓
-completed
+.speccraft runtime-controlled temp area
 ```
 
-Review PASS 本身绝不能：
+或者通过 Git：
 
-```text
-parallel Task → completed
+```bash
+git rev-parse --git-path ...
 ```
 
----
+解析真实 Git metadata。
 
-# 5. M8.0 — Architecture Freeze / ADR 0009
-
-创建：
+要求：
 
 ```text
-docs/decisions/0009-independent-review-gates.md
+canonical repo 可用
+linked worktree 可用
+detached worktree 可用
 ```
 
-ADR 必须冻结：
+不要污染：
 
 ```text
-Review placement
-Reviewer authority
-Review Profile
-Review Plan
-Review Gate
-Review Attempt
-structured findings protocol
-review workspace isolation
-failure semantics
-rework semantics
-legacy compatibility
+real index
+working tree
+HEAD
+branch
 ```
 
 ---
 
-# 6. Reviewer Authority
+## 3.2 Alternate Index 必须先 read-tree HEAD
 
-Reviewer 只允许：
+算法必须恢复为冻结规格：
 
-```text
-读取 Task Contract
-读取 Review Snapshot
-读取 Task-specific diff
-读取 Verification Evidence
-检查代码
-输出 Findings
+```bash
+GIT_INDEX_FILE=<runtime-temp-index> git read-tree HEAD
+GIT_INDEX_FILE=<runtime-temp-index> git add -A ...
+GIT_INDEX_FILE=<runtime-temp-index> git write-tree
 ```
 
-Reviewer 禁止：
+不能继续：
 
 ```text
-修改代码
-修改测试
-修改 Execution Manual
-修改 Task Graph
-修改 Scope
-修改 Design
-新增 Task
-删除 Task
-选择 Executor
-选择 Reviewer
-修改 Verification 命令
-执行 Owner Acceptance
+empty alternate index
+→ git add -A
 ```
 
-Reviewer 发现需求本身可能存在问题时：
-
-只允许记录：
+因为那无法保证：
 
 ```text
-finding
+HEAD tracked state
++
+working tree current state
 ```
 
-不能重新设计产品。
+完整映射。
 
----
-
-# 7. Review Scope
-
-v0.8 先固定两个 Review Gate Kind：
+新增真实测试：
 
 ```text
-spec_compliance
-code_quality
-```
+tracked file
+后来进入 .gitignore
+working tree 未删除
 
-不实现：
-
-```text
-custom prompt gate
-security specialist gate
-performance specialist gate
-UX reviewer
-architecture reviewer
-```
-
-后续可以扩展。
-
----
-
-# 8. spec_compliance
-
-只检查：
-
-```text
-Task Contract 是否完成
-Task Summary 是否满足
-是否漏实现
-是否出现未经批准的 Scope 扩张
-实现是否违背 Execution Guard
-Verification 是否与要求相关
-实际 Diff 是否与 Task 目标匹配
-```
-
-禁止 Reviewer：
-
-```text
-创造新需求
-改变产品方向
-扩大 Scope
+Snapshot 仍必须包含该 tracked file
 ```
 
 ---
 
-# 9. code_quality
+## 3.3 必须强制排除 `.speccraft/**`
 
-检查：
+不能依赖用户 `.gitignore`。
 
-```text
-明显 correctness risk
-错误处理
-边界条件
-测试充分性
-维护性
-重复逻辑
-不必要抽象
-YAGNI
-安全性（仅与本 Task 实际代码有关）
-```
-
-不要因为：
+测试项目必须专门构造：
 
 ```text
-个人代码风格偏好
-命名审美
-无意义重构偏好
-```
-
-产生 blocking finding。
-
----
-
-# 10. M8.0 提交
-
-```text
-feat: M8.0 — independent review gate semantics
+.gitignore 中没有 .speccraft/
 ```
 
 然后：
 
 ```bash
-npm test
-npm run typecheck
-npm run build
+speccraft init
 ```
 
-必须全部通过。
+再 capture snapshot。
+
+断言：
+
+```text
+.speccraft/state.yaml
+.speccraft/runs/**
+.speccraft/logs/**
+```
+
+全部不进入：
+
+```text
+tree
+diff
+changed paths
+review snapshot
+```
+
+可以使用 Git pathspec exclude，例如安全的：
+
+```text
+:(exclude).speccraft/**
+```
+
+但必须验证对：
+
+```text
+untracked
+tracked
+nested runtime files
+```
+
+行为符合预期。
 
 ---
 
-# 11. M8.1 — Reviewer Profiles & Frozen Review Plan
+# 4. P0 — Synthetic Commit Parent Chain
 
-新增：
-
-```text
-src/core/reviews/
-├── types.ts
-├── config.ts
-├── plan.ts
-└── store.ts
-```
-
-升级：
+当前：
 
 ```text
-src/core/project.ts
+preCommit
+postCommit
 ```
 
----
+不能继续是两个无父提交的 root commit。
 
-# 12. project.yaml 新配置
-
-新增顶层：
-
-```yaml
-review:
-  enabled: true
-
-  default_reviewer: primary-reviewer
-
-  reviewers:
-    primary-reviewer:
-      adapter: claude
-      timeout_seconds: 900
-
-    quality-reviewer:
-      adapter: codex
-      timeout_seconds: 1200
-
-  gates:
-    - id: spec
-      kind: spec_compliance
-      reviewer: primary-reviewer
-
-    - id: quality
-      kind: code_quality
-      reviewer: quality-reviewer
-```
-
-Review section 完全可选。
-
-缺省：
+必须满足：
 
 ```text
-review disabled
+sourceHEAD
+   ↓
+preCommit
+   ↓
+postCommit
 ```
 
-因此所有旧项目保持 v0.7 行为。
-
----
-
-# 13. Reviewer Profile
-
-建议：
-
-```ts
-interface ReviewerProfileConfig {
-  adapter: string;
-
-  model?: string;
-  timeoutSeconds?: number;
-  extraArgs?: string[];
-  sandbox?: string;
-}
-```
-
-禁止：
+或者冻结规格中等价的 parent chain：
 
 ```text
-API key
-Token
-credential
-Provider Secret
+preCommit  = commit-tree preTree  -p sourceHEAD
+postCommit = commit-tree postTree -p preCommit
 ```
 
----
-
-# 14. Reviewer Profile ≠ Executor Profile
-
-命名空间分离。
-
-例如：
-
-```yaml
-execution:
-  executors:
-    backend:
-      adapter: claude
-
-review:
-  reviewers:
-    quality:
-      adapter: claude
-```
-
-允许。
-
-二者虽然都使用：
+于是 Review Workspace：
 
 ```text
-claude
+HEAD  = postCommit
+HEAD^ = preCommit
 ```
 
-但：
+必须成立。
+
+新增真实测试：
+
+```bash
+git rev-parse HEAD
+git rev-parse HEAD^
+git diff HEAD^ HEAD
+```
+
+断言：
 
 ```text
-backend Executor
-≠
-quality Reviewer
-```
-
-并且绝不能共享 Provider Session。
-
----
-
-# 15. Reviewer Config 覆盖优先级
-
-```text
-Reviewer Profile override
-↓
-execution.adapters.<adapter>
-↓
-Adapter implementation default
-```
-
-不要复制第二套 Adapter Registry。
-
-仍复用：
-
-```text
-manual
-codex
-claude
-opencode
-trae
-```
-
-Adapter Runtime。
-
----
-
-# 16. Review Gate Config
-
-```ts
-type ReviewGateKind =
-  | 'spec_compliance'
-  | 'code_quality';
-
-interface ReviewGateConfig {
-  id: string;
-  kind: ReviewGateKind;
-  reviewer: string;
-}
-```
-
-所有声明 Gate：
-
-默认都是 Required。
-
-本版不实现：
-
-```text
-optional gate
-warning-only gate
-per-task gate override
+HEAD == postCommit
+HEAD^ == preCommit
+diff HEAD^ HEAD == exact task delta
 ```
 
 ---
 
-# 17. Review Config Validation
+## 4.1 Runtime Git Identity
 
-必须验证：
-
-```text
-enabled == true → gates 非空
-
-gate id 唯一
-
-gate kind 合法
-
-reviewer id 存在
-
-default_reviewer 若存在必须合法
-
-reviewer.adapter 必须是已知 Adapter ID
-```
-
-错误必须指出具体：
+`git commit-tree` 不得依赖用户配置：
 
 ```text
-gate
-reviewer
-adapter
+user.name
+user.email
 ```
 
----
-
-# 18. Frozen Review Plan
-
-Task Graph compile 时：
-
-现有：
+Runtime 自己提供：
 
 ```text
-Task Graph
-+
-Executor Plan
+GIT_AUTHOR_NAME
+GIT_AUTHOR_EMAIL
+GIT_COMMITTER_NAME
+GIT_COMMITTER_EMAIL
 ```
 
-v0.8 增加：
-
-```text
-Review Plan
-```
-
-路径：
-
-```text
-.speccraft/
-└── runs/<run-id>/
-    └── reviews/
-        └── plan.yaml
-```
-
-格式建议：
-
-```yaml
-version: 1
-
-run_id: run-...
-enabled: true
-created_at: ...
-
-gates:
-  - id: spec
-    kind: spec_compliance
-    reviewer: primary-reviewer
-    adapter: claude
-
-    resolved:
-      timeout_seconds: 900
-
-  - id: quality
-    kind: code_quality
-    reviewer: quality-reviewer
-    adapter: codex
-
-    resolved:
-      timeout_seconds: 1200
-```
-
----
-
-# 19. Review Plan 冻结
-
-一旦当前 Run 已产生：
-
-```text
-dispatch evidence
-verification evidence
-review evidence
-workspace evidence
-```
-
-不得重新 compile Review Plan。
-
-必须复用已有 Recompile Guard 思路。
-
-当前 Run 后续：
-
-```text
-project.yaml review config
-```
-
-即使被修改：
-
-也不得改变已冻结 Review Plan。
-
-新配置只影响未来 Run。
-
----
-
-# 20. Review Disabled
-
-如果没有：
-
-```text
-review:
-```
-
-或：
-
-```yaml
-review:
-  enabled: false
-```
-
-则：
-
-```text
-no Review Plan
-```
-
-所有 v0.7 lifecycle 原样运行。
-
-不要自动生成：
-
-```text
-default reviewer
-```
-
----
-
-# 21. M8.1 测试
-
-至少覆盖：
-
-```text
-review section absent → disabled
-
-enabled + valid gates → plan generated
-
-duplicate gate → FAIL
-
-unknown reviewer → FAIL
-
-unknown gate kind → FAIL
-
-reviewer adapter resolution precedence
-
-plan roundtrip
-
-plan gate order == config declaration order
-
-execution evidence exists
-→ plan cannot silently rebuild
-```
-
-提交：
-
-```text
-feat: M8.1 — reviewer profiles and frozen review plan
-```
-
----
-
-# 22. M8.2 — Reviewer Preflight & Diagnostics
-
-新增：
-
-```text
-src/core/reviews/
-├── preflight.ts
-└── diagnostics.ts
-```
-
-Review enabled 时：
-
-必须在：
-
-```text
-implementStart
-workspace creation
-Task mutation
-```
-
-以前完成 Review Preflight。
-
----
-
-# 23. Review Preflight
-
-流程：
-
-```text
-load frozen Review Plan
-↓
-collect unique adapters
-↓
-probe each adapter ONCE
-↓
-capability validation
-↓
-PASS
-```
-
-不要按：
-
-```text
-Task × Gate
-```
-
-重复 probe。
-
----
-
-# 24. Manual Reviewer 禁止自动执行
-
-如果：
-
-```text
-reviewer.adapter = manual
-```
-
-auto execute：
-
-必须 preflight FAIL。
-
-错误：
-
-```text
-manual reviewer cannot run automatic review gates
-```
-
-不要假装 review PASS。
-
----
-
-# 25. Reviewer Adapter unavailable
+使用固定 SpecCraft Runtime identity。
 
 例如：
 
 ```text
-quality → codex
+SpecCraft Runtime
+speccraft@local
 ```
 
-Codex 未安装：
+具体值保持清晰、固定、无用户身份依赖即可。
+
+测试：
+
+临时 repo：
 
 ```text
-execute
-→ preflight blocked
+不配置 git user.name
+不配置 git user.email
 ```
 
-必须发生在任何：
-
-```text
-implementStart
-Task dispatch
-workspace creation
-```
-
-以前。
-
-不得自动 fallback 到其它 Reviewer。
+Snapshot synthetic commit 仍必须成功。
 
 ---
 
-# 26. Capability Guard
+# 5. P0 — Exact Changed Paths + Sequential Scope Audit
 
-如果 Reviewer Profile 声明：
-
-```text
-model
-```
-
-但 Adapter：
-
-```text
-modelSelection == false
-```
-
-必须明确 FAIL。
-
-其它 Adapter config 也遵循 v0.7 相同原则。
-
----
-
-# 27. Review CLI
-
-新增：
-
-```bash
-speccraft reviews list
-speccraft reviews plan
-speccraft reviews doctor
-speccraft reviews show <task-id>
-```
-
-不要新增：
-
-```text
-reviews auto
-reviews optimize
-reviews vote
-reviews debate
-```
-
----
-
-# 28. reviews list
-
-显示 project config：
-
-```text
-Gate
-Kind
-Reviewer
-Adapter
-```
-
----
-
-# 29. reviews plan
-
-显示 frozen Run Plan：
-
-```text
-Run
-Gate
-Kind
-Reviewer Profile
-Adapter
-```
-
----
-
-# 30. reviews doctor
-
-仅 Probe 当前 Review Plan 真正需要的 Adapter。
-
-同一 Adapter：
-
-Probe 一次。
-
----
-
-# 31. reviews show
-
-显示某 Task：
-
-```text
-Gate
-Attempts
-Latest Decision
-Reviewer
-Adapter
-Findings
-Source Verification
-```
-
----
-
-# 32. M8.2 提交
-
-```text
-feat: M8.2 — review preflight and diagnostics
-```
-
----
-
-# 33. M8.3 — Exact Task Change Snapshot
-
-这是 v0.8 最重要的底层模块。
-
-新增：
-
-```text
-src/core/reviews/
-├── snapshot.ts
-├── workspace.ts
-└── paths.ts
-```
-
-Review 不应该拿：
-
-```text
-整个 Agent 会话历史
-```
-
-而应该拿：
-
-```text
-Task Contract
-+
-Task exact delta
-+
-Verification Evidence
-+
-最终代码 Snapshot
-```
-
----
-
-# 34. 为什么不能简单 git diff HEAD
-
-Sequential route 中：
-
-```text
-Task A
-```
-
-完成以后可能仍是 uncommitted change。
-
-然后：
-
-```text
-Task B
-```
-
-继续施工。
-
-如果 B Review 简单执行：
-
-```bash
-git diff HEAD
-```
-
-会同时看到：
-
-```text
-A + B
-```
-
-无法准确判断 B。
-
-所以必须建立：
-
-```text
-Pre-Task Tree
-Post-Task Tree
-```
-
----
-
-# 35. 使用 Alternate Git Index
-
-禁止通过真实：
-
-```text
-git add
-git commit
-stash
-```
-
-改变用户 working tree。
-
-实现：
-
-```text
-captureWorkingTreeTree()
-```
-
-使用临时：
-
-```text
-GIT_INDEX_FILE
-```
-
-算法：
-
-```text
-git read-tree HEAD
-
-GIT_INDEX_FILE=<temp>
-git add -A -- working-tree
-git write-tree
-```
-
-注意：
-
-必须排除：
-
-```text
-.speccraft/**
-```
-
-Runtime state。
-
-实际命令应根据当前 Git/pathspec 最安全形式实现。
-
-不要修改用户真实 index。
-
----
-
-# 36. Pre Tree
-
-Task dispatch 前：
-
-```text
-preTree = snapshot(current working tree)
-```
-
-它包含：
-
-```text
-当前 HEAD
-+
-已有未提交项目修改
-```
-
-但不包含：
-
-```text
-.speccraft runtime state
-```
-
----
-
-# 37. Post Tree
-
-Task Verification PASS 后：
-
-```text
-postTree = snapshot(current working tree)
-```
-
-于是：
-
-```text
-git diff preTree postTree
-```
-
-代表：
-
-> 当前 Task 真正引入的变化。
-
-而不是：
-
-> 当前 repo 所有未提交变化。
-
----
-
-# 38. Exact Changed Paths
-
-同时计算：
-
-```text
-git diff --name-only preTree postTree
-```
-
-结果用于：
-
-```text
-Review Evidence
-Scope validation
-Handoff
-```
-
----
-
-# 39. Review-enabled Sequential Scope Guard
-
-Review enabled 时：
-
-必须检查：
+当前 Review-enabled Sequential route 必须补齐：
 
 ```text
 Task Delta Changed Paths
@@ -1262,1126 +517,472 @@ Task Delta Changed Paths
 Task Declared Scope
 ```
 
-这样 v0.8 开始：
+顺序：
 
-Sequential Review route 也获得真实 Task Scope Evidence。
+```text
+capture preTree
+↓
+dispatch
+↓
+verification PASS
+↓
+capture postTree
+↓
+compute exact delta
+↓
+compute changed paths
+↓
+scope audit
+↓
+Review Gates
+```
 
-Review disabled legacy sequential：
+复用已有：
 
-不得突然改变行为。
+```ts
+pathMatchesScope()
+```
+
+不要新造另一套 Scope Engine。
 
 ---
 
-# 40. no_changes
+## 5.1 Scope Violation 语义
 
-如果：
+例如：
+
+Task：
+
+```yaml
+scope:
+  paths:
+    - src/api/**
+```
+
+实际改变：
+
+```text
+src/api/index.ts
+package.json
+```
+
+必须：
+
+```text
+scope audit FAIL
+Task failed
+Review attempt count = 0
+```
+
+不要把 Scope violation 交给 Reviewer 自己判断。
+
+因为：
+
+```text
+Scope Guard
+是 Runtime deterministic invariant
+不是 LLM judgment
+```
+
+---
+
+## 5.2 no_changes
+
+Review enabled 时：
 
 ```text
 preTree == postTree
 ```
 
-Review-enabled Task：
-
-默认 FAIL：
+仍必须 FAIL：
 
 ```text
 no task changes to review
 ```
 
-不要让 Reviewer 对空变化直接 PASS。
+但确保这个判断不被 `.speccraft runtime changes` 干扰。
 
 ---
 
-# 41. Synthetic Review Commits
+# 6. P0 — Review Attempt Finalization 必须保证 Evidence Integrity
 
-Review Snapshot 不创建真实 branch/ref。
-
-使用：
+当前重大问题：
 
 ```text
-preCommit = git commit-tree preTree -p sourceHEAD
-postCommit = git commit-tree postTree -p preCommit
+runReviewGate()
+先写 PASS manifest
+↓
+外层才 check reviewer mutation
+↓
+Runtime 返回 ERROR
 ```
 
-这些：
+这会产生：
 
 ```text
-Git objects only
+运行时 ERROR
+磁盘 manifest PASS
 ```
 
-不修改：
-
-```text
-branch
-HEAD
-ref
-working tree
-real index
-```
-
-必须自行提供 Runtime author identity，避免依赖用户 Git author 配置。
+禁止继续存在。
 
 ---
 
-# 42. Review Workspace
+## 6.1 重构 Review Attempt 生命周期
 
-使用：
-
-```text
-postCommit
-```
-
-创建 detached worktree：
+推荐结构：
 
 ```text
-git worktree add --detach <review-workspace> <postCommit>
+reserve attempt
+↓
+create review workspace
+↓
+prepare package
+↓
+before_review hook
+↓
+run reviewer
+↓
+normalize provider output
+↓
+parse review protocol
+↓
+check reviewer mutation / HEAD drift
+↓
+derive FINAL decision
+↓
+write final manifest ONCE
+↓
+after_review hook
+↓
+cleanup workspace
 ```
 
-这样 Reviewer workspace 内：
+关键原则：
 
-```text
-HEAD     = post Task Snapshot
-HEAD^    = pre Task Snapshot
+> `manifest.yaml` 中的 `decision` 必须是整个 Review Attempt 的最终 Runtime decision。
 
-git diff HEAD^ HEAD
-```
-
-就是当前 Task exact delta。
-
-Reviewer 可以查看：
-
-```text
-完整项目文件
-当前 Task 最终状态
-精确 Task Diff
-```
-
-而不会接触真实施工 workspace。
+不能在 mutation guard 之前写最终 PASS。
 
 ---
 
-# 43. Review Workspace 路径
+## 6.2 Reviewer Mutation 必须写成正式 ERROR Evidence
 
-真实目录：
-
-```text
-<project-parent>/
-└── .speccraft-review-worktrees/
-    └── <project>/
-        └── <run>/
-            └── <task>/
-                └── <gate>/
-                    └── attempt-NNN/
-```
-
-Review workspace 永远：
+如果 Reviewer 修改 workspace：
 
 ```text
-detached HEAD
+decision: error
+error_code: reviewer_mutation
 ```
 
-不要建 Reviewer branch。
+并保留：
+
+```text
+stdout
+stderr
+raw-output
+findings（如有）
+```
+
+这样即使 Reviewer 输出：
+
+```text
+PASS
+```
+
+最终 Runtime 仍记录：
+
+```text
+ERROR
+```
 
 ---
 
-# 44. Reviewer Mutation Isolation
+# 7. P0 — Mutation Guard 不得只检查 dirty state
 
-Reviewer 即使执行：
-
-```text
-修改文件
-删除文件
-生成文件
-```
-
-也只能污染：
-
-```text
-Review Workspace
-```
-
-不能污染：
-
-```text
-Executor Workspace
-canonical workspace
-```
-
-Reviewer 完成后检查：
+当前：
 
 ```bash
 git status --porcelain
 ```
 
-必须为空。
+只可以发现未提交修改。
 
-如果不为空：
+Reviewer 可以：
 
-```text
-reviewer_mutation
-→ Review ERROR
+```bash
+修改文件
+git add
+git commit
 ```
 
-然后：
+随后：
 
-```text
-force-remove review worktree
+```bash
+git status --porcelain
 ```
 
-因为 Review Workspace 是 Runtime-owned disposable snapshot。
+为空。
 
-不要把 Reviewer 修改带回源代码。
-
----
-
-# 45. Review Workspace Cleanup
-
-每次 Review Attempt 后：
-
-成功或失败都：
+因此 Mutation Guard 必须同时检查：
 
 ```text
-remove review worktree
+working tree clean
+AND
+HEAD == expected postCommit
 ```
 
-central evidence 保留。
+至少：
 
-如果 cleanup 失败：
-
-记录 warning。
-
-不要因此把 PASS 改为 FAIL。
-
----
-
-# 46. Non-Git Project
-
-Review feature 在 v0.8：
-
-要求 Git repository。
+```bash
+git status --porcelain
+git rev-parse HEAD
+```
 
 如果：
 
 ```text
-review.enabled == true
+HEAD != expectedReviewHead
 ```
 
-但项目非 Git：
+同样：
 
 ```text
-preflight FAIL
+reviewer_mutation
+Review ERROR
 ```
 
-Legacy：
+新增真实 E2E：
+
+### Dirty mutation
+
+Fake Reviewer：
 
 ```text
-review disabled
-```
-
-仍允许非 Git sequential 项目。
-
----
-
-# 47. M8.3 Tests
-
-必须使用真实临时 Git repo 验证：
-
-```text
-preTree 不修改真实 index
-
-postTree 不修改 HEAD
-
-preTree → postTree diff 是 exact task delta
-
-之前 Task 的 uncommitted changes
-不会出现在新 Task delta
-
-untracked task file 能进入 snapshot
-
-.speccraft runtime state 不进入 snapshot
-
-review workspace HEAD^ → HEAD
-等于 Task delta
-
-review workspace 与 source workspace 不同
-
-Reviewer workspace mutation
-不会污染 source workspace
-```
-
-提交：
-
-```text
-feat: M8.3 — exact task review snapshots
-```
-
----
-
-# 48. M8.4 — Structured Review Protocol & Evidence Runtime
-
-新增：
-
-```text
-src/core/reviews/
-├── protocol.ts
-├── package.ts
-├── runner.ts
-└── lifecycle.ts
-```
-
-新增：
-
-```text
-skills/task-spec-review/SKILL.md
-skills/task-quality-review/SKILL.md
-```
-
----
-
-# 49. Reviewer Package
-
-Reviewer 获得：
-
-```text
-Task ID
-Task title
-Task summary
-Task scope
-Task dependencies
-
-Execution Guard relevant rules
-
-Gate kind
-
-source Dispatch Attempt
-source Verification Attempt
-
-Verification commands
-Verification PASS evidence
-
-preTree
-postTree
-
-review snapshot workspace
-```
-
-Reviewer 不获得：
-
-```text
-整个 Planner 会话
-Owner 私人聊天
-Executor 隐藏 chain-of-thought
-其它不相关 Task 历史
-```
-
----
-
-# 50. Review Prompt
-
-必须明确告诉 Reviewer：
-
-```text
-你是独立 Reviewer。
-
-你不是 Planner。
-你不是 Executor。
-你不能修改代码。
-你不能扩大 Task Scope。
-你不能创造新需求。
-
-你的目标：
-检查当前 Task 的 verified implementation。
-```
-
-根据 Gate Kind 注入对应 Skill rubric。
-
----
-
-# 51. Reviewer 可自行查看
-
-Review Workspace 中：
-
-```bash
-git status
-git diff HEAD^ HEAD
-git show HEAD
-```
-
-以及项目源码。
-
-不要要求 Runtime 把整个 Diff 塞进 Prompt。
-
----
-
-# 52. Structured Output Protocol
-
-Reviewer 最终输出必须包含唯一：
-
-````text
-```speccraft-review
-version: 1
-summary: "..."
-
-findings:
-  - severity: major
-    category: correctness
-    path: src/foo.ts
-    line: 42
-    message: "..."
-
-  - severity: minor
-    category: maintainability
-    path: src/bar.ts
-    message: "..."
-```
-````
-
-不要允许自由文本作为机器 Gate 结果。
-
-自由文本可以保存：
-
-```text
-raw-output.txt
-```
-
-但 Gate 只能读机器 block。
-
----
-
-# 53. Finding Severity
-
-只允许：
-
-```text
-blocker
-major
-minor
-```
-
----
-
-# 54. Finding Category
-
-只允许：
-
-```text
-spec
-correctness
-tests
-maintainability
-security
-scope
-```
-
-不要无限扩 enum。
-
----
-
-# 55. Runtime 决定 Gate Decision
-
-Reviewer 不拥有最终 Gate algorithm。
-
-Runtime 读取 findings：
-
-```text
-存在 blocker / major
-→ CHANGES_REQUIRED
-
-只有 minor / 无 findings
-→ PASS
-```
-
-因此 structured block 不需要 Reviewer 自己输出：
-
-```text
-PASS
-FAIL
-```
-
-避免：
-
-```text
-verdict 与 findings 矛盾
-```
-
----
-
-# 56. Malformed Protocol
-
-以下任何情况：
-
-```text
-没有 block
-多个 block
-YAML 解析失败
-version != 1
-severity 非法
-category 非法
-message 为空
+修改文件
+不 commit
 ```
 
 结果：
 
 ```text
-Review ERROR
+ERROR
 ```
 
-绝不能默认 PASS。
+### Commit mutation
 
----
-
-# 57. Review Attempt Evidence
-
-路径：
+Fake Reviewer：
 
 ```text
-.speccraft/
-└── runs/<run>/
-    └── tasks/<task>/
-        └── reviews/
-            └── <gate-id>/
-                └── attempt-001/
-                    ├── manifest.yaml
-                    ├── task-contract.md
-                    ├── diff.patch
-                    ├── verification.md
-                    ├── reviewer-prompt.md
-                    ├── raw-output.txt
-                    ├── stdout.log
-                    ├── stderr.log
-                    └── findings.yaml
+修改文件
+git add
+git commit
 ```
 
----
-
-# 58. Review Attempt Manifest
-
-至少：
-
-```yaml
-version: 1
-
-attempt: 1
-
-run_id: ...
-task_id: ...
-gate_id: spec
-gate_kind: spec_compliance
-
-reviewer_profile: primary-reviewer
-adapter: claude
-
-decision: pass
-
-source_dispatch_attempt: 3
-source_verification_attempt: 2
-
-workspace_attempt: 1   # parallel 时存在
-
-pre_tree: ...
-post_tree: ...
-pre_commit: ...
-post_commit: ...
-
-started_at: ...
-finished_at: ...
-
-session_id: ...
-finding_count: 2
-blocking_findings: 0
-```
-
-Review ERROR：
-
-```yaml
-decision: error
-error_code: protocol_invalid
-```
-
----
-
-# 59. Attempt Append-only
-
-同：
+结果仍必须：
 
 ```text
-Task
+ERROR
+```
+
+同时：
+
+```text
+source executor workspace unchanged
+canonical workspace unchanged
+review workspace removed
+manifest decision == error
+```
+
+---
+
+# 8. P0 — Review Preflight 必须包含 Git Readiness
+
+Review enabled 的 v0.8 要求：
+
+```text
+Git repository
 +
-Gate
+resolvable HEAD
 ```
 
-每次 Review：
+因此 Review Preflight 不能只接：
+
+```ts
+plan
+```
+
+它必须获得：
 
 ```text
-attempt-001
-attempt-002
-...
+projectRoot
 ```
 
-不得覆盖。
+并验证：
 
-使用原子目录 reservation。
-
-不要只：
-
-```text
-readdir.length + 1
+```bash
+git rev-parse --is-inside-work-tree
+git rev-parse HEAD
 ```
+
+必要时验证 Snapshot 所需能力。
 
 ---
 
-# 60. Reviewer Provider Session
+## 8.1 Fail-before-mutation
+
+Non-Git Review-enabled 项目：
+
+```text
+speccraft execute
+```
+
+必须在任何以下行为之前失败：
+
+```text
+implementStart
+Task status mutation
+Dispatch Attempt
+Workspace creation
+Review workspace creation
+```
+
+新增权威测试，断言：
+
+```text
+0 dispatch attempts
+0 workspace attempts
+0 review attempts
+implementation stage unchanged
+task status unchanged
+```
+
+Review disabled 的 non-Git sequential legacy：
+
+```text
+仍保持旧行为
+```
+
+不要破坏向后兼容。
+
+---
+
+# 9. P0 — Reviewer Provider Session 必须进入 Evidence
+
+现在只传：
+
+```ts
+freshSession: true
+```
+
+不够。
+
+Review Runtime 必须真正调用：
+
+```ts
+adapter.normalize(...)
+```
+
+复用现有 Adapter common denominator。
+
+不要自己重新解析 Provider session。
+
+从 normalized result 提取：
+
+```text
+sessionId
+```
+
+写入：
+
+```yaml
+session_id:
+```
+
+Review Attempt Manifest。
+
+---
+
+## 9.1 Fresh Session Hard Invariant
 
 每个 Review Attempt：
 
-**永远 fresh session。**
+```text
+freshSession = true
+```
 
-禁止 Reviewer resume。
+永远：
 
-即使：
+```text
+不传 executor session id
+不传 previous reviewer session id
+```
+
+并通过 Fake Adapter 实际产生不同 session：
+
+```text
+review-session-1
+review-session-2
+```
+
+测试：
 
 ```text
 same Task
 same Gate
 same Reviewer
-```
+same Adapter
 
-第二次 review：
-
-也必须：
-
-```text
-new Provider Session
-```
-
-原因：
-
-Independent Review 应避免携带上一轮 Reviewer 上下文偏差。
-
----
-
-# 61. Executor Session ≠ Reviewer Session
-
-即使：
-
-```text
-Executor adapter = claude
-Reviewer adapter = claude
-```
-
-也必须：
-
-```text
-Executor Session
-≠
-Review Session
-```
-
-不能 lookup dispatch session。
-
-Review Runtime 有独立调用 Evidence。
-
----
-
-# 62. Review Runner
-
-不要复用：
-
-```text
-Dispatch Attempt
-```
-
-作为 Review Attempt。
-
-可以复用底层：
-
-```text
-Adapter.buildInvocation
-process runner
-Adapter.normalize
-```
-
-但 Evidence Namespace 独立。
-
-不要让 Review Invocation 增加：
-
-```text
-Task dispatchAttempts
+attempt 1 session != attempt 2 session
 ```
 
 ---
 
-# 63. Reviewer Failure
+## 9.2 Executor Session != Reviewer Session
 
-Provider：
-
-```text
-spawn error
-timeout
-non-zero exit
-normalize fail
-protocol invalid
-reviewer mutation
-```
-
-统一：
+使用同一 Fake Adapter：
 
 ```text
-Review ERROR
+Executor = fake-alpha
+Reviewer = fake-alpha
 ```
 
-Task：
+Fake Adapter 应可观察：
 
 ```text
-failed
+buildInvocation input.sessionId
+freshSession
 ```
-
-Review disabled 时不影响旧行为。
-
----
-
-# 64. M8.4 Tests
-
-覆盖：
-
-```text
-valid no finding → PASS
-
-minor only → PASS
-
-major → CHANGES_REQUIRED
-
-blocker → CHANGES_REQUIRED
-
-malformed → ERROR
-
-invalid severity → ERROR
-
-multiple machine blocks → ERROR
-
-Reviewer session fresh every attempt
-
-review attempt append-only
-
-review attempt 不增加 dispatch attempt
-
-reviewer mutation → ERROR
-```
-
-提交：
-
-```text
-feat: M8.4 — structured independent review runtime
-```
-
----
-
-# 65. M8.5 — Sequential Review Gates
-
-升级：
-
-```text
-src/core/tasks/orchestrator.ts
-```
-
-不要破坏 legacy route。
-
----
-
-# 66. Sequential Legacy
-
-Review disabled：
-
-保持：
-
-```text
-dispatch
-↓
-verify completeOnPass=true
-↓
-completed
-```
-
-旧测试尽量不需要改。
-
----
-
-# 67. Review-enabled Sequential
-
-改成：
-
-```text
-capture preTree
-
-↓
-dispatch
-
-↓
-Task Verification
-completeOnPass = false
-
-↓
-capture postTree
-
-↓
-exact delta scope audit
-
-↓
-Review Gate 1
-
-↓ PASS
-Review Gate 2
-
-↓ PASS
-Task completed
-```
-
----
-
-# 68. Review FAIL
-
-如果任何 Gate：
-
-```text
-CHANGES_REQUIRED
-或 ERROR
-```
-
-则：
-
-```text
-Task → failed
-```
-
-后续 dependent：
-
-由现有 Dependency Engine：
-
-```text
-→ blocked
-```
-
-不要创建：
-
-```text
-Review Stage
-```
-
----
-
-# 69. Gate 顺序
-
-Gate 严格按：
-
-```text
-Review Plan declaration order
-```
-
-执行。
-
-如果：
-
-```text
-spec → CHANGES_REQUIRED
-```
-
-本轮不要再执行：
-
-```text
-quality
-```
-
-避免无意义 Token 消耗。
-
-下一次 rework：
-
-所有 Gate 从第一项重新运行。
-
----
-
-# 70. Completion
-
-只有：
-
-```text
-Verification PASS
-+
-all configured gates PASS
-```
-
-Sequential Task 才：
-
-```text
-completed
-```
-
----
-
-# 71. Review Result 必须绑定当前施工版本
-
-Gate PASS 必须记录：
-
-```text
-source_dispatch_attempt
-source_verification_attempt
-```
-
-旧 Review PASS：
-
-不能用于新 Dispatch / 新 Verification。
-
----
-
-# 72. Review Plan Satisfaction
-
-实现类似：
-
-```text
-isCurrentReviewSatisfied(
-  task,
-  latestDispatch,
-  latestVerification
-)
-```
-
-必须保证：
-
-每个 required gate 都存在：
-
-```text
-decision = pass
-source_dispatch_attempt == latest dispatch
-source_verification_attempt == latest verification
-```
-
----
-
-# 73. Sequential E2E
-
-```text
-A → B
-```
-
-A：
-
-```text
-verify PASS
-spec PASS
-quality PASS
-→ completed
-```
-
-B：
-
-同样。
 
 断言：
 
-Review 发生在：
-
 ```text
-Verification 之后
-Task completed 之前
+Reviewer received input.sessionId == undefined
+Reviewer freshSession == true
+Reviewer manifest.session_id != Executor dispatch.session_id
 ```
 
-提交：
+必须验证真实 Evidence，不接受：
 
 ```text
-feat: M8.5 — sequential task review gates
+只 assert freshSession === true
 ```
+
+作为全部结论。
 
 ---
 
-# 74. M8.6 — Parallel Review Gates
+# 10. P0 — Parallel Review 权威闭环
 
-升级：
-
-```text
-src/core/parallel/orchestrator.ts
-```
-
-当前真实顺序：
+本轮必须真正跑通：
 
 ```text
-dispatch
-↓
-pre scope audit
-↓
-verify
-↓
-post scope audit
-↓
-git mutation guard
-↓
-runtime commit
-↓
-integration
+Parallel + Review-enabled
 ```
 
-改成：
+不能再只测试 Sequential。
 
-```text
-dispatch
-↓
-pre scope audit
-↓
-verify
-↓
-post scope audit
-↓
-capture postTree
-↓
-Independent Review Gates
-↓
-git mutation guard
-↓
-runtime commit
-↓
-integration
-```
-
-PreTree：
-
-必须在：
-
-```text
-dispatch
-```
-
-以前 capture。
-
----
-
-# 75. Parallel Review FAIL
-
-如果：
-
-```text
-Review CHANGES_REQUIRED
-```
-
-则：
-
-```text
-Workspace status = failed
-failure_phase = review
-
-Task = failed
-
-NO runtime commit
-NO integration
-```
-
-worktree retained。
-
----
-
-# 76. Review ERROR
-
-同样：
-
-```text
-Workspace failed
-Task failed
-NO integration
-```
-
-Evidence 保留。
-
----
-
-# 77. Review PASS
-
-所有 Gate PASS：
-
-才允许：
-
-```text
-Git Mutation Guard
-stageAndAudit
-Runtime Commit
-Integration
-```
-
----
-
-# 78. Hard Invariant
-
-必须显式测试：
-
-```text
-Task Verification PASS
-+
-Review not PASS
-
-→ taskCommit MUST NOT exist
-```
-
-以及：
-
-```text
-integrationCommit MUST NOT exist
-```
-
----
-
-# 79. Parallel Wave
-
-同一个 Wave：
-
-Task A / Task B 的 Review 可以发生在各自 isolated execution 内。
-
-因此：
-
-```text
-Review 并发
-```
-
-天然受：
-
-```text
-current wave size
-```
-
-限制。
-
-v0.8 不实现：
-
-```text
-Reviewer-specific concurrency limiter
-```
-
-后续再考虑。
-
----
-
-# 80. Same Adapter Different Roles
-
-例如：
-
-```text
-Task B Executor:
-claude
-
-Task B Reviewer:
-claude
-```
-
-允许。
-
-但必须：
-
-```text
-different session
-different evidence namespace
-different role
-```
-
----
-
-# 81. Parallel E2E
-
-Graph：
+权威图：
 
 ```text
 A
@@ -2391,425 +992,300 @@ B + C
 D
 ```
 
+---
+
+## 10.1 Parallel PASS
+
 B/C：
 
 ```text
+isolated execution workspace
+↓
+dispatch PASS
+↓
 verification PASS
+↓
+post snapshot
+↓
 review PASS
+↓
+git mutation guard
+↓
+runtime commit
+↓
+integration
+↓
+completed
 ```
 
 断言：
 
 ```text
-B/C Review 都发生在自己的 review snapshot workspace
-
-Task Workspace 不被 Reviewer 修改
-
-Review PASS 后才 Runtime Commit
-
-Integration 后才 completed
+Review 在 taskCommit 之前发生
+Review PASS 后才允许 taskCommit
+integration 后才 completed
 ```
 
-提交：
+还要断言：
 
 ```text
-feat: M8.6 — parallel independent review gates
+Parallel execution workspace 是 linked worktree
+Snapshot 成功
+Review worktree HEAD^ → HEAD diff 正确
+```
+
+这是专门验证前面的 `.git file` 问题已经修复。
+
+---
+
+## 10.2 Parallel Review FAIL
+
+Task B：
+
+```text
+verification PASS
+review major finding
+```
+
+必须：
+
+```text
+workspace status = failed
+failure_phase = review
+Task = failed
+taskCommit absent
+integrationCommit absent
+canonical 不包含 B 修改
 ```
 
 ---
 
-# 82. M8.7 — Review Feedback & Rework Loop
+## 10.3 Parallel Reviewer Mutation
 
-Review 的目标不是：
-
-```text
-产生报告以后没人使用
-```
-
-必须把 findings 重新带回 Executor。
-
----
-
-# 83. Latest Blocking Feedback
-
-实现：
+Reviewer 修改 Review workspace：
 
 ```text
-compileLatestReviewFeedback(taskId)
-```
-
-只读取最近：
-
-```text
-CHANGES_REQUIRED
-```
-
-Gate 中的：
-
-```text
-blocker
-major
-```
-
-Finding。
-
-minor：
-
-可以展示，但不要作为 rework 核心指令。
-
----
-
-# 84. Executor Retry Prompt
-
-Task：
-
-```text
-review failed
-↓
-tasks reopen <id>
-↓
-next dispatch
-```
-
-新的 Executor Prompt 增加：
-
-```text
-## Previous Review Findings
-
-Gate: spec
-
-- [major] src/foo.ts:42 ...
-- [blocker] src/bar.ts ...
-```
-
-但同时必须明确：
-
-```text
-Review findings are technical evidence,
-not permission to change approved Product/Design/Scope.
-
-Verify each finding against the actual codebase
-before implementing changes.
-```
-
----
-
-# 85. 禁止 Reviewer 改 Task Contract
-
-如果 finding 要求：
-
-```text
-添加未批准功能
-改变产品设计
-扩大 Scope
-```
-
-Executor 不应盲目实施。
-
-它只能：
-
-```text
-在现有 Task Contract 内修复
-```
-
-否则由 Owner/Planner 重新走上游变更流程。
-
----
-
-# 86. Review Rework
-
-同一 Task：
-
-```text
-Task ID unchanged
-Run ID unchanged
-Executor Assignment unchanged
-```
-
-Parallel pre-integration Review FAIL：
-
-```text
-Workspace Attempt 默认复用
-```
-
-因为：
-
-```text
-failed pre-integration workspace
-```
-
-已符合 v0.6 reuse 语义。
-
----
-
-# 87. New Review Attempt
-
-返工以后：
-
-```text
-new Dispatch Attempt
-new Verification Attempt
-new Review Attempt
-```
-
-但：
-
-```text
-same Task
-same Run
-same Workspace Attempt（pre-integration retry）
-```
-
-可能成立。
-
-Review Session：
-
-始终 fresh。
-
----
-
-# 88. Old Review PASS invalidation
-
-新 Dispatch 后：
-
-所有旧：
-
-```text
-Review PASS
-```
-
-仍保留 Evidence，
-
-但不能满足新施工版本。
-
-因为：
-
-```text
-source_dispatch_attempt
-source_verification_attempt
-```
-
-已经不同。
-
----
-
-# 89. Owner Rework
-
-Task 已：
-
-```text
-review PASS
-integrated
-completed
-```
-
-之后 Owner Reject：
-
-```text
-tasks reopen --cascade
-```
-
-下一施工：
-
-```text
-new Workspace Attempt
-new Verification
-new Review Attempts
-new Reviewer Sessions
-```
-
-旧 Review History 保留。
-
----
-
-# 90. M8.7 Runtime Integration
-
-升级：
-
-```text
-status
-next
-tasks show
-validate
-handoff
-aggregate execution report
-hooks
-```
-
----
-
-# 91. status
-
-新增简要：
-
-```text
-Review:
-  enabled
-  gates: spec, quality
-  failed tasks: 1
-```
-
-不要把所有 Finding 打到 status。
-
----
-
-# 92. tasks show
-
-增加：
-
-```text
-Reviews:
-
-spec:
-  attempts: 2
-  latest: PASS
-
-quality:
-  attempts: 1
-  latest: CHANGES_REQUIRED
-```
-
----
-
-# 93. next
-
-如果 Task 因 Review failed：
-
-输出：
-
-```text
-Task api requires review rework.
-
-Inspect:
-speccraft reviews show api
-
-Then:
-speccraft tasks reopen api
-```
-
-不要自动 reopen。
-
----
-
-# 94. validate 新 invariant
-
-至少：
-
-```text
-Review Plan run_id == Run ID
-
-Gate IDs unique
-
-Gate reviewer exists
-
-Gate adapter exists
-
-Review attempt Task exists
-
-Review attempt Gate exists
-
-Review attempt reviewer == frozen plan
-
-Review attempt adapter == frozen plan
-
-Review attempt source dispatch exists
-
-Review attempt source verification exists
-
-Review PASS requires source verification PASS
-
-Task completed with review enabled
-→ all required gates currently satisfied
-
-Parallel workspace committed/integrated
-→ all required gates currently satisfied
-
-Review changes_required
-→ cannot itself mark Task completed
-
 Review ERROR
-→ cannot count as PASS
-
-Old review PASS
-→ cannot satisfy newer dispatch/verify version
-
-Reviewer session
-→ must not equal Executor session
-
-Reviewer mutation
-→ cannot produce PASS
-
-16 Workflow stages unchanged
+Task failed
+no taskCommit
+no integrationCommit
+executor workspace retained/符合既有 retry 语义
+canonical unchanged
 ```
 
 ---
 
-# 95. Handoff
+# 11. P1 — Review Package 必须补全真实输入
 
-新增：
+当前：
 
-```text
-review-history.md
+```ts
+verificationCommands: [], // TODO
 ```
 
-内容：
+必须删除 TODO 并真正提取 Task Verification commands。
+
+Reviewer Package 要包含：
 
 ```text
-Task
+Task Contract
 Gate
-Reviewer
-Adapter
-Review Attempts
-Source Dispatch
-Source Verification
-Decision
-Blocking Findings
-Minor Findings
-Review Session
+source Dispatch Attempt
+source Verification Attempt
+Verification commands
+Verification PASS evidence
+Execution Guard relevant rules
+preTree
+postTree
+preCommit
+postCommit
+review workspace
 ```
 
-确定性生成。
+---
+
+## 11.1 verification.md
+
+Review Attempt Evidence 中必须真实生成：
+
+```text
+verification.md
+```
+
+不要只把 Verification Evidence 塞进 prompt。
+
+内容确定性生成：
+
+```text
+source verification attempt
+commands
+each command status
+logs/evidence reference
+overall PASS
+```
 
 不调用 AI。
 
 ---
 
-# 96. Aggregate Execution Report
+## 11.2 Execution Guard
 
-Task 汇总增加：
+当前错误读取：
 
 ```text
-review:
-spec PASS
-quality PASS
+<projectRoot>/.speccraft/project.md
 ```
 
-只引用 Evidence。
+这不是 init 实际创建的文件。
 
-不要让 AI 二次总结。
+不要继续读取不存在路径。
+
+找到现有真实 Execution Guard 来源。
+
+当前执行路径已有：
+
+```text
+skills/execution-guard/SKILL.md
+```
+
+或 orchestrator 已加载的：
+
+```text
+executionGuard
+```
+
+优先复用同一份真实文本。
+
+不要复制另一份 Guard。
+
+Reviewer Prompt 必须真的包含 Execution Guard relevant rules。
 
 ---
 
-# 97. Hooks
+# 12. P1 — 清理重复的 reviews/lifecycle.ts
 
-Review 是新的真实生命周期边界。
+现在存在：
 
-允许新增且仅新增：
+```text
+src/core/reviews/sequential.ts
+```
+
+真实 orchestrator 正在使用。
+
+同时又有：
+
+```text
+src/core/reviews/lifecycle.ts
+```
+
+里面还留着：
+
+```text
+TODO: atomic reservation
+attemptNumber = 1
+For now we assume...
+```
+
+这是重复、过时、容易误导后续开发的实现。
+
+必须进行一次调用关系审计：
+
+```bash
+rg "executeReviewLifecycle|runSingleReviewGate" src tests
+```
+
+如果已经没有生产调用：
+
+```text
+删除 lifecycle.ts
+```
+
+同时修掉 imports/tests/docs。
+
+如果仍有调用：
+
+```text
+不要维护两套逻辑
+重构到唯一 canonical Review execution path
+```
+
+最终原则：
+
+> Review Attempt orchestration 只能存在一个权威实现。
+
+---
+
+# 13. P1 — before_review / after_review Hooks 真正接线
+
+Hook enum 已经声明：
 
 ```text
 before_review
 after_review
 ```
 
-before：
+但必须接到真实 Review 生命周期。
 
-blocking。
+---
 
-after：
+## 13.1 before_review
 
-non-rollback。
+发生在：
 
-Hook env：
+```text
+review package prepared
+review invocation 尚未执行
+```
+
+之前。
+
+这是 blocking hook。
+
+Hook failure：
+
+```text
+Review 不执行
+Review Attempt decision = error
+error_code = before_review_hook_failed
+Task failed
+```
+
+不要产生 Reviewer Provider 调用。
+
+---
+
+## 13.2 after_review
+
+发生在：
+
+```text
+FINAL Review decision 已确定
+Evidence 已落盘
+```
+
+之后。
+
+这是 non-rollback hook。
+
+失败：
+
+```text
+warning only
+```
+
+不能把：
+
+```text
+PASS → ERROR
+```
+
+也不能改写历史 decision。
+
+---
+
+## 13.3 Hook env
+
+至少：
 
 ```text
 SPECCRAFT_REVIEW_GATE
@@ -2820,402 +1296,672 @@ SPECCRAFT_TASK_ID
 SPECCRAFT_RUN_ID
 ```
 
-不要创建：
+Parallel 时还应保留既有：
 
 ```text
-before_review_snapshot
-after_review_snapshot
-before_review_parse
-...
+SPECCRAFT_WORKSPACE_ROOT
+SPECCRAFT_WORKSPACE_ATTEMPT
+SPECCRAFT_WAVE
 ```
 
-事件爆炸。
-
-提交：
-
-```text
-feat: M8.7 — review feedback and runtime integration
-```
+如果适用。
 
 ---
 
-# 98. M8.8 — Failure & Independence Semantics
+# 14. P1 — workspace_attempt / error_code Evidence
 
-必须专门验证故障。
+Parallel Review Attempt manifest 必须写：
 
----
-
-# 99. Reviewer unavailable
-
-```text
-Task Executor available
-
-Reviewer adapter unavailable
+```yaml
+workspace_attempt: N
 ```
 
-结果：
+Sequential：
 
 ```text
-Review preflight FAIL
+可以 absent
 ```
 
-必须发生在：
+错误必须使用结构化：
 
-```text
-implementStart 前
+```yaml
+decision: error
+error_code: ...
+error_message: ...
 ```
 
-证明：
-
-```text
-0 dispatch
-0 workspace
-0 task mutation
-```
-
----
-
-# 100. Reviewer spawn failure
-
-Executor：
-
-```text
-PASS
-```
-
-Verification：
-
-```text
-PASS
-```
-
-Reviewer：
+至少统一：
 
 ```text
 spawn_error
+timeout
+non_zero_exit
+normalize_failed
+protocol_invalid
+reviewer_mutation
+before_review_hook_failed
 ```
 
-结果：
+不要只把代码埋进字符串：
 
 ```text
-Review ERROR
-Task failed
+error_message: "spawn_error: ..."
+```
+
+---
+
+# 15. P1 — Review Attempt Store 必须真正校验 Manifest
+
+当前：
+
+```ts
+readReviewManifestOrNull()
+```
+
+只粗略检查：
+
+```text
+version
+gate_id
+decision
+```
+
+然后直接：
+
+```ts
+as ReviewAttemptManifest
+```
+
+加强基础结构校验。
+
+至少检查：
+
+```text
+attempt integer >= 1
+run_id string
+task_id string
+gate_id string
+gate_kind valid
+reviewer_profile string
+adapter string
+decision valid
+source_dispatch_attempt integer >= 1
+source_verification_attempt integer >= 1
+pre_tree string
+post_tree string
+pre_commit string
+post_commit string
+finding_count integer >= 0
+blocking_findings integer >= 0
+```
+
+可选：
+
+```text
+workspace_attempt
+session_id
+error_code
+error_message
+```
+
+也需要类型正确。
+
+不要引入重型 schema library。
+
+用现有 TypeScript + helper 即可。
+
+---
+
+# 16. P1 — `speccraft validate` 加入 Review Invariants
+
+新增：
+
+```ts
+checkReviewConsistency(...)
+```
+
+并接入：
+
+```ts
+validateExecutionConsistency(...)
+```
+
+至少实现冻结规格中的这些 invariant：
+
+### Plan
+
+```text
+Review Plan run_id == Run ID
+gate ids unique
+gate kind valid
+```
+
+### Attempt references
+
+```text
+Review attempt task exists
+Review attempt gate exists
+reviewer_profile == frozen plan gate.reviewer
+adapter == frozen plan gate.adapter
+```
+
+### Source Evidence
+
+```text
+source_dispatch_attempt exists for same task
+source_verification_attempt exists for same task
+Review PASS requires source verification PASS
+```
+
+### Completion
+
+Review enabled 时：
+
+```text
+Task completed
+→ every required gate currently satisfied
 ```
 
 Parallel：
 
 ```text
-no taskCommit
-no integration
+workspace integrated
+→ required review gates satisfied
 ```
 
----
-
-# 101. Reviewer malformed output
-
-Reviewer 返回普通文字：
+### Stale Evidence
 
 ```text
-Looks good.
+old Review PASS
+cannot satisfy newer dispatch/verification
 ```
 
-没有：
-
-```text
-speccraft-review block
-```
-
-结果：
-
-```text
-Review ERROR
-```
-
-绝不能 PASS。
-
----
-
-# 102. Reviewer mutation
-
-Fake Reviewer：
-
-修改 Review Workspace 文件。
-
-结果：
-
-```text
-reviewer_mutation
-Review ERROR
-```
-
-同时必须证明：
-
-```text
-Executor source workspace unchanged
-
-canonical unchanged
-
-Reviewer mutation discarded with review workspace
-```
-
----
-
-# 103. Major Finding
-
-Reviewer：
-
-```yaml
-severity: major
-```
-
-结果：
-
-```text
-CHANGES_REQUIRED
-Task failed
-```
-
-Dependent：
-
-```text
-blocked
-```
-
----
-
-# 104. Minor Finding
-
-Reviewer仅返回：
-
-```yaml
-severity: minor
-```
-
-Gate：
-
-```text
-PASS
-```
-
-Finding 保留 Evidence。
-
----
-
-# 105. Gate short-circuit
-
-配置：
-
-```text
-spec
-quality
-```
+### Mutation
 
 如果：
 
 ```text
-spec CHANGES_REQUIRED
+error_code == reviewer_mutation
 ```
 
-必须断言：
+则：
 
 ```text
-quality review attempt count == 0
+decision 不得是 pass
 ```
 
-本轮。
+### Session independence
+
+如果 Review manifest 有：
+
+```text
+session_id
+```
+
+且 Dispatch evidence 有 Executor session：
+
+```text
+same Task review session != executor session
+```
+
+同 Gate 多 attempts：
+
+```text
+非空 session_id 不得重复
+```
+
+### Workflow
+
+继续断言：
+
+```text
+16 Workflow Stages unchanged
+Task Status remains six states
+```
+
+不要增加 Review Stage。
 
 ---
 
-# 106. Rework
+# 17. P1 — Handoff 加入 review-history.md
 
-修复后：
+这是 v0.8 正式交接证据。
+
+新增确定性编译：
 
 ```text
-new dispatch
-new verify
+review-history.md
+```
+
+内容至少：
+
+```text
+Task
+Gate
+Kind
+Reviewer Profile
+Adapter
+Review Attempt
+Source Dispatch Attempt
+Source Verification Attempt
+Workspace Attempt
+Decision
+Error Code
+Blocking Findings
+Minor Findings
+Review Session
+Started At
+Finished At
+```
+
+按稳定顺序：
+
+```text
+Task Graph order
+→ Review Plan gate order
+→ attempt number ascending
+```
+
+不要调用 AI。
+
+---
+
+## 17.1 Handoff manifest
+
+`manifest.yaml`：
+
+```text
+files:
+```
+
+中加入：
+
+```text
+review-history.md
+```
+
+sources 如有结构，也加入 review attempts。
+
+`HANDOFF.md` 可增加：
+
+```text
+Review history 摘要
+```
+
+但不要复制大量 Finding 正文。
+
+---
+
+# 18. P1 — Aggregate Execution Report
+
+继续保留现在已有：
+
+```text
+review [spec PASS, quality PASS]
+```
+
+但增加 Review Evidence reference：
+
+```text
+runs/<runId>/tasks/<taskId>/reviews/
+```
+
+不要只引用 verification。
+
+报告只能引用 Evidence，不允许 AI 二次总结。
+
+---
+
+# 19. P1 — status / next / tasks show
+
+检查是否真正满足：
+
+### status
+
+```text
+Review:
+  enabled
+  gates: ...
+  failed tasks: N
+```
+
+当前如果缺 failed tasks count，补上。
+
+不要打印所有 findings。
+
+### next
+
+如果 Task 因 Review：
+
+```text
+changes_required
+```
+
+或 review ERROR：
+
+必须明确引导：
+
+```text
+speccraft reviews show <task>
+speccraft tasks reopen <task>
+```
+
+ERROR 没 blocker findings 时也不能退化成普通 unknown failure。
+
+### tasks show
+
+应包含：
+
+```text
+Reviews:
+  spec:
+    attempts:
+    latest:
+  quality:
+    attempts:
+    latest:
+```
+
+确认不是只实现单独：
+
+```text
+reviews show
+```
+
+---
+
+# 20. P1 — Review Plan Recompile Guard
+
+重新验证：
+
+一旦 Run 已存在任何：
+
+```text
+dispatch evidence
+verification evidence
+review evidence
+workspace evidence
+```
+
+Review Plan 不得被重新生成。
+
+必须：
+
+```text
+继续使用 frozen Review Plan
+```
+
+新增或完善真实测试：
+
+```text
+compile plan
+↓
+产生 dispatch
+↓
+修改 project.yaml review config
+↓
+再次 compile
+→ 不得 silently rebuild
+```
+
+并覆盖：
+
+```text
+review evidence already exists
+workspace evidence already exists
+```
+
+---
+
+# 21. P1 — Owner Reject / Rework
+
+确认 Owner Acceptance 仍然位于 Review 后面。
+
+Review：
+
+```text
+≠ Owner Acceptance
+```
+
+权威链：
+
+```text
+Task verification
+↓
+Independent Review
+↓
+Task completed / integration
+↓
+Run verification
+↓
+Owner Acceptance
+```
+
+Owner reject 后：
+
+```text
+tasks reopen --cascade
+```
+
+新施工必须：
+
+```text
+new Dispatch Attempt
+new Verification Attempt
+new Review Attempts
+fresh Reviewer sessions
+```
+
+Parallel 已 integrated Task：
+
+```text
+new Workspace Attempt
+```
+
+旧 Review History 保留，但不得自动满足新施工。
+
+新增真实 E2E，不要只测试：
+
+```text
+isCurrentReviewSatisfied helper
+```
+
+---
+
+# 22. 权威 E2E 必须重建
+
+这轮结束前，建立一组真正能证明 v0.8 的权威 Runtime E2E。
+
+不要把所有断言塞进一个超大测试。
+
+至少拆成下列组。
+
+---
+
+## E2E A — Sequential PASS
+
+```text
+Task
+dispatch
+verify PASS
 spec PASS
 quality PASS
+completed
 ```
 
-旧 Changes Required Evidence 仍在。
-
----
-
-# 107. No Reviewer Resume
-
-同 Gate 两次 review：
+断言顺序：
 
 ```text
-session1 != session2
-```
+during reviewer:
+task == in_progress
 
-即使：
+after verification before review:
+not completed
 
-```text
-same Reviewer Profile
-same Adapter
-same Task
+after all review:
+completed
 ```
 
 ---
 
-# 108. Executor / Reviewer same Adapter
-
-使用：
+## E2E B — Sequential Scope Violation
 
 ```text
-fake-alpha
+scope = src/**
+executor 修改 src/a.ts + package.json
+verification PASS
 ```
 
-同时作为：
+必须：
 
 ```text
-Executor
-Reviewer
+scope FAIL
+task failed
+review attempts = 0
+```
+
+---
+
+## E2E C — Sequential Review Changes Required → Retry
+
+第一轮：
+
+```text
+dispatch 1
+verify 1
+spec major
+task failed
+```
+
+reopen。
+
+第二轮：
+
+```text
+dispatch 2
+verify 2
+spec PASS
+quality PASS
+completed
 ```
 
 断言：
 
 ```text
-Review receivedSessionId == undefined
-
-Review Session != Executor Session
+attempt-001 保留
+attempt-002 新增
+source binding = 2/2
+new review sessions
 ```
 
 ---
 
-# 109. No Auto Fallback
+## E2E D — Reviewer Dirty Mutation
 
-Reviewer adapter failure：
-
-即使存在其它 Reviewer：
-
-不得：
+Reviewer：
 
 ```text
-automatic fallback
+modify file
+```
+
+必须：
+
+```text
+Review ERROR
+manifest ERROR
+error_code reviewer_mutation
+source workspace unchanged
+review workspace removed
 ```
 
 ---
 
-# 110. M8.8 提交
+## E2E E — Reviewer Commit Mutation
+
+Reviewer：
 
 ```text
-feat: M8.8 — review failure and independence semantics
+modify
+git add
+git commit
+```
+
+必须仍：
+
+```text
+ERROR
+```
+
+证明：
+
+```text
+HEAD drift guard
+```
+
+有效。
+
+---
+
+## E2E F — Linked Worktree Snapshot
+
+真实：
+
+```bash
+git worktree add
+```
+
+在 linked worktree 里调用：
+
+```ts
+captureTreeSnapshot()
+```
+
+必须成功。
+
+断言：
+
+```text
+.git 是 file
+snapshot 仍正常
 ```
 
 ---
 
-# 111. M8.9 — Docs + Final DoD
+## E2E G — `.speccraft` Runtime Exclusion
 
-新增：
+项目：
 
 ```text
-docs/review-gates.md
+不 ignore .speccraft/
 ```
 
-更新：
+snapshot：
 
 ```text
-README.md
-docs/task-orchestration.md
-docs/parallel-execution.md
-docs/executor-routing.md
-docs/agent-adapters.md
-```
-
-README：
-
-```text
-v0.1 Workflow
-v0.2 Execution + Verification
-v0.3 Acceptance + Handoff
-v0.4 Agent Adapters + Hooks
-v0.5 Task Graph
-v0.6 Safe Parallel Execution
-v0.7 Multi-Executor Routing
-v0.8 Independent Review Gates
+不得包含 .speccraft
 ```
 
 ---
 
-# 112. Review 文档必须明确
+## E2E H — Synthetic Parent Chain
 
-```text
-Review ≠ Verification
-Review ≠ Owner Acceptance
-Reviewer ≠ Executor
+Review Worktree：
+
+```bash
+git rev-parse HEAD^
+git diff HEAD^ HEAD
 ```
 
-以及：
+必须：
 
 ```text
-Review enabled is opt-in.
+HEAD^ == preCommit
+diff == exact delta
 ```
-
-旧项目默认不发生行为变化。
 
 ---
 
-# 113. 权威 E2E A — Sequential PASS
-
-```text
-Task A
-↓
-Executor alpha
-↓
-Verification PASS
-↓
-spec reviewer PASS
-↓
-quality reviewer PASS
-↓
-completed
-```
-
-断言真实 Evidence 顺序。
-
----
-
-# 114. E2E B — Sequential Changes Required → Rework
-
-第一轮：
-
-```text
-dispatch PASS
-verify PASS
-spec major finding
-→ CHANGES_REQUIRED
-→ task failed
-```
-
-然后：
-
-```text
-reviews show
-tasks reopen
-```
-
-第二轮 Executor Prompt：
-
-必须包含旧 Review blocker/major findings。
-
-Executor 修复。
-
-然后：
-
-```text
-new verification
-new spec review
-new quality review
-PASS
-```
-
-Task completed。
-
----
-
-# 115. E2E C — Parallel Review Gate
+## E2E I — Parallel PASS
 
 Graph：
 
@@ -3227,32 +1973,26 @@ B + C
 D
 ```
 
-B/C：
+review enabled。
+
+断言：
 
 ```text
-executor PASS
-verify PASS
+B/C use linked worktrees
 review PASS
-```
-
-必须断言：
-
-```text
-Review 在 Runtime Commit 前完成
-
-Review PASS 才存在 taskCommit
-
-integration 后 completed
+then taskCommit
+then integration
+then completed
 ```
 
 ---
 
-# 116. E2E D — Parallel Review Failure
+## E2E J — Parallel Review FAIL
 
-Task B：
+B：
 
 ```text
-verify PASS
+verification PASS
 review major
 ```
 
@@ -3260,143 +2000,147 @@ review major
 
 ```text
 workspace failed
-failure_phase = review
-task failed
+failure_phase review
 taskCommit absent
 integrationCommit absent
-canonical 不包含 B change
-```
-
----
-
-# 117. E2E E — Reviewer Mutation Isolation
-
-Fake Reviewer：
-
-```text
-修改 Review Workspace
-```
-
-断言：
-
-```text
-Review ERROR
-
-source Task Workspace unchanged
-
 canonical unchanged
-
-review workspace removed
 ```
 
 ---
 
-# 118. E2E F — Malformed Protocol
-
-Reviewer：
+## E2E K — Same Adapter, Different Session
 
 ```text
-普通文字
-```
-
-结果：
-
-```text
-ERROR
-not PASS
-```
-
----
-
-# 119. E2E G — Same Adapter Independent Session
-
-```text
-Executor = fake-alpha
-Reviewer = fake-alpha
+Executor adapter = fake-alpha
+Reviewer adapter = fake-alpha
 ```
 
 断言：
 
 ```text
-executorSession != reviewSession
-
-Reviewer never receives executor session id
+Reviewer freshSession true
+Reviewer input.sessionId undefined
+Executor session != Reviewer session
 ```
 
 ---
 
-# 120. E2E H — Gate Order
+## E2E L — Same Gate Retry Fresh Session
+
+同 Task 同 Gate：
 
 ```text
-spec
-quality
-```
-
-第一轮：
-
-```text
-spec major
+review attempt 1
+review attempt 2
 ```
 
 断言：
 
 ```text
-quality not executed
-```
-
-第二轮：
-
-```text
-spec PASS
-quality PASS
+session1 != session2
 ```
 
 ---
 
-# 121. E2E I — Owner Rework
+## E2E M — Non-Git Preflight
 
-第一轮：
+Review enabled，non-Git：
 
 ```text
 execute
-verify
-reviews PASS
-integrate
-Run verify
-Owner accept/reject path
-```
-
-Owner reject 后：
-
-```text
-reopen Task
 ```
 
 必须：
 
 ```text
-new Workspace Attempt
-new Dispatch
-new Verification
-new Review Attempts
-fresh Review Sessions
+preflight blocked
+0 dispatch
+0 workspace
+0 task mutation
 ```
-
-旧 Review PASS 不得自动满足新版本。
 
 ---
 
-# 122. Legacy Regression
+## E2E N — Review Hooks
 
-建立完全没有：
+`before_review`：
 
 ```text
+执行
+```
+
+失败则：
+
+```text
+Reviewer 未调用
+Review ERROR
+```
+
+`after_review`：
+
+```text
+执行
+```
+
+失败：
+
+```text
+只 warning
+PASS 不回滚
+```
+
+---
+
+## E2E O — Validate Tampered Evidence
+
+正常 PASS 后手工篡改：
+
+```text
+reviewer_profile
+adapter
+source_verification_attempt
+decision
+```
+
+分别断言：
+
+```text
+speccraft validate FAIL
+```
+
+---
+
+## E2E P — Handoff Review History
+
+完整通过：
+
+```text
+execute
+verify
+review
+owner accept
+handoff
+```
+
+断言：
+
+```text
+review-history.md exists
+manifest lists review-history.md
+内容包含真实 review attempts
+```
+
+---
+
+## E2E Q — Legacy Regression
+
+无：
+
+```yaml
 review:
 ```
 
-的 v0.7 项目。
-
-必须证明：
+分别验证：
 
 ```text
 sequential
@@ -3407,61 +2151,101 @@ acceptance
 handoff
 ```
 
-全部旧行为不变。
+保持 v0.7 行为。
 
 ---
 
-# 123. Hard DoD Assertions
+# 23. 测试质量审计
 
-必须显式测试：
+不要再只搜：
 
 ```text
-16 Workflow Stages unchanged
+assert.ok(true)
+Test stub
+```
 
-Task Status remains six states
+最终执行：
 
-Review disabled → v0.7 behavior unchanged
+```bash
+rg -n \
+'TODO|FIXME|HACK|XXX|placeholder|for now|For now|simplified|stub|assert\.ok\(true' \
+src tests
+```
 
-Review enabled sequential:
-Verification PASS != completed until Review PASS
+逐条判断。
 
-Review enabled parallel:
-Verification PASS != commit
-Review PASS required before Runtime Commit
-Integration required before completed
+允许：
 
-Reviewer never writes source workspace
+```text
+明确属于未来版本的文档 TODO
+```
 
-Reviewer uses detached isolated review workspace
+但生产路径不能保留：
 
-Reviewer receives exact Task delta
+```text
+attemptNumber = 1 // TODO
+verificationCommands = []
+For now assume...
+```
 
-Review input does not contain whole Agent session history
+这种未完成实现。
 
-Reviewer Session never resumes
+同时扫描：
 
-Executor Session != Reviewer Session
+```bash
+rg -n \
+'§113|§114|§115|§116|§117|§118|§119|§120|E2E|DoD|Coverage' \
+tests
+```
 
-Review PASS is bound to current dispatch + verification
+对照：
 
-Old Review PASS cannot satisfy new work
+```text
+测试名称
+测试文件头注释
+真实 test body
+```
 
-Major/Blocker blocks
+避免再次出现：
 
-Minor does not block
-
-Malformed output cannot PASS
-
-Review failure does not fallback
-
-Review Gate is not Workflow Stage
-
-Review does not replace Owner Acceptance
+```text
+文件头声称覆盖
+实际没有测试
 ```
 
 ---
 
-# 124. Dependency Constraints
+# 24. 不要扩展范围
+
+本轮禁止实现：
+
+```text
+optional review gate
+warning-only gate
+custom gate
+AI voting
+AI debate
+Reviewer fallback
+security specialist
+remote reviewer service
+database
+queue
+Docker sandbox
+Provider SDK
+Reviewer-specific concurrency limiter
+```
+
+这些仍属于：
+
+```text
+Not Implemented
+```
+
+不要因为修 Review Runtime 顺手加功能。
+
+---
+
+# 25. Dependency Constraints
 
 继续禁止新增：
 
@@ -3494,409 +2278,395 @@ nanoid
 Node standard library
 existing js-yaml
 existing Adapter Runtime
-existing Git spawn helpers
+native git via spawn
+existing Scope Engine
+existing Hook Runtime
 ```
 
 ---
 
-# 125. Reviewer Workspace 不使用容器
+# 26. 提交策略
 
-不要引入：
+不要把所有东西一次塞进一个巨型提交。
 
-```text
-Docker
-VM
-sandbox service
-```
-
-Review Isolation 由：
+建议按真实逻辑拆：
 
 ```text
-synthetic Git snapshot
-+
-detached worktree
+fix: harden exact review snapshots for linked worktrees
+
+fix: finalize review evidence after mutation checks
+
+feat: persist reviewer session and complete review evidence
+
+fix: enforce review git preflight and sequential scope audit
+
+feat: integrate review invariants hooks and handoff evidence
+
+test: add authoritative sequential and parallel review e2e
 ```
 
-实现。
+如果现场实现更适合不同拆法，可以调整。
+
+但要求：
+
+```text
+每个提交自洽
+每个提交测试绿
+```
+
+不要人为制造：
+
+```text
+M8.10
+M8.11
+```
+
+这是 v0.8 收尾，不是新 Milestone。
 
 ---
 
-# 126. Real Provider Smoke
+# 27. 每阶段质量门禁
 
-最终执行：
+每完成一个逻辑块：
 
 ```bash
-speccraft adapters doctor
-speccraft executors doctor
-speccraft reviews doctor
-```
-
-如实报告：
-
-```text
-PASS
-FAIL
-SKIPPED
-```
-
-真实 Provider 不属于权威 DoD。
-
-权威 E2E：
-
-使用 fake adapters / fake reviewers。
-
----
-
-# 127. Milestone Commit
-
-建议：
-
-```text
-feat: M8.0 — independent review gate semantics
-
-feat: M8.1 — reviewer profiles and frozen review plan
-
-feat: M8.2 — review preflight and diagnostics
-
-feat: M8.3 — exact task review snapshots
-
-feat: M8.4 — structured independent review runtime
-
-feat: M8.5 — sequential task review gates
-
-feat: M8.6 — parallel independent review gates
-
-feat: M8.7 — review feedback and runtime integration
-
-feat: M8.8 — review failure and independence semantics
-
-docs/test: M8.9 — review gate docs and v0.8 DoD
-```
-
-普通 Bug：
-
-归当前 Milestone。
-
----
-
-# 128. 每个 Milestone Gate
-
-每个 M8.x 完成：
-
-```bash
-npm test
+npm test -- --test-concurrency=2
 npm run typecheck
 npm run build
+git diff --check
 git status
 ```
 
-不绿：
+失败：
 
-禁止继续。
+```text
+先修
+禁止继续累积
+```
 
 ---
 
-# 129. 最终回归
+# 28. 最终完整 DoD
 
-M8.9 后至少运行：
+最终必须连续执行：
 
 ```bash
-npm test
+npm test -- --test-concurrency=2
+npm test -- --test-concurrency=2
+
 npm run typecheck
 npm run build
-git status
+
+git diff --check
+
+rg -n \
+'TODO|FIXME|HACK|XXX|placeholder|For now|simplified|assert\.ok\(true|Test stub' \
+src tests
 ```
 
-建议连续完整 test：
+要求：
 
 ```text
-至少 2 次
+full regression PASS × 2
+0 failed
+typecheck PASS
+build PASS
+diff check clean
+无生产路径残余 stub/TODO
 ```
 
-确保 Review worktree / parallel tests 无 flaky。
+如果 `rg` 有匹配：
+
+逐条解释。
+
+不能只报告：
+
+```text
+0 stub
+```
+
+却没有真正检查 TODO。
 
 ---
 
-# 130. Git
+# 29. 最终 Git 操作
 
-最终分支：
-
-```text
-feat/v0.8-independent-review-gates
-```
-
-推送：
+完成全部验收后：
 
 ```bash
-git push -u origin feat/v0.8-independent-review-gates
+git status
+git branch --show-current
+git rev-parse HEAD
+git log --oneline -10
 ```
 
-禁止：
+确认：
 
 ```text
-force push
-自动 merge main
-修改 token
-修改 SSH
-修改 remote
+branch = feat/v0.8-independent-review-gates
+working tree clean
 ```
 
-施工手册文件：
+然后：
+
+```bash
+git push origin feat/v0.8-independent-review-gates
+```
+
+如遇：
 
 ```text
-SpecCraft v0.8.md
+502
+网络错误
 ```
 
-如果作为会话输入/未跟踪文件存在：
+允许重试。
 
-不要提交。
+最后必须验证：
+
+```bash
+git rev-parse HEAD
+git ls-remote origin refs/heads/feat/v0.8-independent-review-gates
+```
+
+要求：
+
+```text
+local HEAD
+=
+remote branch SHA
+```
+
+未经 Owner 验收：
+
+```text
+禁止 merge main
+禁止删除 feature branch
+```
 
 ---
 
-# 131. 最终汇报格式
+# 30. Git Identity
 
-完成以后返回：
+当前仓库最近提交使用：
 
 ```text
-# SpecCraft v0.8 最终汇报
+张末冬
+morton_cheung@zhangmodongdeMacBook-Air.local
 ```
 
-必须包含：
+不要擅自 amend 历史提交。
 
-## 1. Baseline
+在本轮开工时检查：
+
+```bash
+git config user.name
+git config user.email
+```
+
+如果为空：
+
+只报告给 Owner。
+
+除非仓库已有明确配置规则，否则：
+
+```text
+不要擅自修改全局 Git identity
+```
+
+本轮新提交使用当前 Git 已配置 identity。
+
+Synthetic Review Commit 则必须使用：
+
+```text
+SpecCraft Runtime 自己的固定 identity
+```
+
+二者不要混淆。
+
+---
+
+# 31. 最终汇报格式
+
+完成后不要只说：
+
+```text
+全部通过
+```
+
+按下面结构汇报。
+
+## A. Baseline
 
 ```text
 branch
-HEAD
-tests
-typecheck
-build
+start SHA
+final SHA
+remote SHA
 ```
 
-## 2. Final
+## B. 修复的问题
 
-同上。
-
-## 3. M8.0–M8.9 commits
-
-SHA + message。
-
-## 4. Reviewer Profile
-
-真实 project.yaml schema。
-
-## 5. Review Plan
-
-真实 frozen plan evidence。
-
-## 6. Snapshot Runtime
-
-说明：
+逐条：
 
 ```text
-preTree
-postTree
-preCommit
-postCommit
-review workspace
+问题
+根因
+修改位置
+最终行为
 ```
 
-## 7. Review Protocol
-
-说明：
+至少覆盖：
 
 ```text
-structured findings
-decision derivation
-malformed behavior
+linked worktree snapshot
+read-tree HEAD
+.speccraft exclusion
+synthetic parent chain
+runtime git identity
+sequential scope audit
+mutation finalization
+HEAD drift detection
+non-Git preflight
+review session evidence
+workspace_attempt
+verification.md
+Execution Guard
+hooks
+validate
+handoff
 ```
 
-## 8. Sequential Evidence
+## C. 权威 E2E
 
-真实：
+逐条列：
 
 ```text
-Verification → Review → completed
+PASS / FAIL
+测试文件
+验证了什么真实行为
 ```
 
-## 9. Parallel Evidence
-
-真实：
+特别说明：
 
 ```text
-Verification
-→ Review
-→ Commit
-→ Integration
-→ completed
+Parallel Review
+Reviewer mutation
+session independence
+Non-Git preflight
+Handoff review-history
 ```
 
-## 10. Rework Evidence
-
-Review fail → reopen → findings injected → re-review。
-
-## 11. Session Evidence
-
-证明：
+## D. Full Regression
 
 ```text
-Executor Session != Reviewer Session
-Review Session never resumes
+run 1:
+N/N PASS
+
+run 2:
+N/N PASS
+
+typecheck:
+PASS
+
+build:
+PASS
+
+git diff --check:
+PASS
 ```
 
-## 12. Mutation Isolation
+## E. Stub / TODO Audit
 
-证明 Reviewer 写文件不会污染源代码。
-
-## 13. Failure Evidence
+报告：
 
 ```text
-reviewer unavailable
-spawn error
-malformed
-major/blocker
-no fallback
+匹配数量
+剩余匹配位置
+为什么允许保留
 ```
 
-## 14. Legacy Regression
-
-v0.7 review-disabled 项目行为不变。
-
-## 15. Real Provider Smoke
-
-PASS / FAIL / SKIPPED。
-
-## 16. Git
-
-status / branch / push。
-
-## 17. Known Limitations
-
-只写真实限制。
-
-## 18. Explicitly Not Implemented
-
-必须明确：
+如果生产路径还有 TODO：
 
 ```text
-Owner review override / waiver
-Reviewer-specific concurrency limiter
-custom review gate
-security-specialist Reviewer
-architecture Reviewer
-AI debate
-AI voting
-automatic review fallback
-remote reviewer farm
-SaaS backend
-database
-Provider SDK
+不得宣称 DoD 完成
 ```
+
+## F. Git
+
+```text
+commit list
+local SHA
+remote SHA
+working tree
+```
+
+## G. Final Verdict
+
+只允许以下三种：
+
+```text
+READY FOR OWNER ACCEPTANCE
+```
+
+或：
+
+```text
+NOT READY — BLOCKERS REMAIN
+```
+
+或：
+
+```text
+PARTIALLY READY — <明确原因>
+```
+
+不要自行 merge main。
 
 ---
 
-# 132. v0.8 Definition of Done
+# 32. 最终判定标准
 
-只有全部满足才能宣布：
-
-```text
-SpecCraft v0.8 complete
-```
-
-必须满足：
+这轮真正要证明的不是：
 
 ```text
-Review config opt-in
-Legacy review-disabled compatible
-
-Frozen Review Plan exists when enabled
-
-Reviewer Profile separate from Executor Profile
-
-Reviewer Profile resolves through existing Adapter Runtime
-
-Review preflight before mutation
-
-Reviewer unavailable blocks before implementation
-
-Exact Task pre/post snapshots exist
-
-Task delta excludes previous Task changes
-
-Review Workspace isolated from source
-
-Reviewer mutation cannot contaminate source
-
-Review Attempt evidence append-only
-
-Review machine protocol strict
-
-Major / blocker → CHANGES_REQUIRED
-
-Minor-only → PASS
-
-Malformed output → ERROR
-
-Review Session always fresh
-
-Executor Session != Reviewer Session
-
-Sequential Verification PASS
-does not complete Task before Review
-
-Parallel Verification PASS
-does not create taskCommit before Review
-
-Parallel Review PASS
-required before Runtime Commit
-
-Integration required before parallel completed
-
-Review fail blocks dependents
-
-Review feedback reaches retry Executor
-
-Old Review PASS invalidated by new dispatch/verify
-
-Owner rework produces new reviews
-
-status / next / tasks show support Review
-
-validate includes Review invariants
-
-handoff includes review-history.md
-
-Aggregate report includes review evidence
-
-before_review / after_review hooks work
-
-16 Workflow stages unchanged
-
-Task status remains six states
-
-No database
-
-No Provider SDK
-
-All legacy tests PASS
-
-New Review E2E PASS
-
-npm test PASS
-
-typecheck PASS
-
-build PASS
-
-Git tracked working tree clean
-
-feature branch successfully pushed
+Reviewer 被调用过
 ```
 
-任何一项没有满足：
+而是：
 
-不要宣布 v0.8 完成。
+```text
+Reviewer 审查的是当前 Task 的真实、精确、可复现 Snapshot；
 
-做到这里以后停止。
+Review 在 Sequential 与 Parallel 两条真实执行路径中都处于正确生命周期位置；
 
-不要自行开始 v0.9。
+Reviewer 无法污染 Executor 或 canonical source；
+
+Review 的最终 Decision 与 Evidence 永远一致；
+
+Review PASS 与当前 Dispatch / Verification / Workspace 版本绑定；
+
+Reviewer Provider Session 可审计且与 Executor 独立；
+
+Review enabled 时所有 completion / integration invariant 都可由 validate 重新验证；
+
+Review 历史能完整进入最终 handoff；
+
+Review disabled 时 v0.7 legacy 行为完全不变。
+```
+
+只有这些全部成立，SpecCraft v0.8 才可以进入：
+
+```text
+Owner Acceptance
+```
+
+在此之前：
+
+```text
+不要 merge main
+不要开始 v0.9
+不要把 477 tests PASS 当作完成证明
+```
+
+现在从 Site Survey 开始，按真实代码逐项施工，完成全部修改、测试、提交、推送和远端 SHA 核验后再汇报。

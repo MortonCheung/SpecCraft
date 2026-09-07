@@ -112,7 +112,7 @@ export async function compileTaskGraph(options: {
     );
   }
 
-  // ADR 0008 §20：Run 已有真实执行 evidence 后禁止 rebuild Task Graph / Executor Plan
+  // ADR 0008 §20 / v0.8 §20：Run 已有任何真实执行 evidence 后禁止 rebuild Task Graph / Executor Plan
   if (await hasExecutionEvidence(options.speccraftDir, options.runId)) {
     throw new Error('cannot rebuild task/executor plan after execution evidence exists');
   }
@@ -142,6 +142,12 @@ export async function compileTaskGraph(options: {
   }
   validateGraphConstraints(graph);
 
+  // v0.8 §20：frozen Review Plan 重建必须发生在任何 plan 写入之前（review evidence 存在 → 禁止）
+  const reviewConfig = options.projectConfig?.review;
+  if (reviewConfig?.enabled && (await hasReviewEvidence(options.speccraftDir, options.runId))) {
+    throw new Error('cannot rebuild review plan after review evidence exists');
+  }
+
   // ADR 0008 §4、§16：构建并持久化 Executor Plan（frozen Run evidence）
   if (options.projectConfig) {
     const ctx = buildExecutorsContext(options.projectConfig);
@@ -150,11 +156,7 @@ export async function compileTaskGraph(options: {
     await writeExecutorPlan(options.speccraftDir, options.runId, plan);
 
     // ADR 0009 §18-§19：构建并持久化 frozen Review Plan（review enabled 时）
-    const reviewConfig = options.projectConfig.review;
     if (reviewConfig?.enabled) {
-      if (await hasReviewEvidence(options.speccraftDir, options.runId)) {
-        throw new Error('cannot rebuild review plan after review evidence exists');
-      }
       const knownAdapters = new Set(listAdapterIds());
       validateReviewConfig(reviewConfig, knownAdapters);
       const reviewPlan = buildFrozenReviewPlan({

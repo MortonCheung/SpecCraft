@@ -37,6 +37,8 @@ export interface HandoffManifest {
     execution_reports: string[];
     verification_attempts: string[];
     acceptance_records: string[];
+    /** §17.1：review attempt evidence（相对 run 的 manifest.yaml 路径） */
+    review_attempts: string[];
   };
 
   files: string[];
@@ -69,6 +71,8 @@ export interface HandoffCompileInput {
   acceptanceHistory: string[];
   /** executor history 摘要行（v0.7 §56） */
   executorHistory: string[];
+  /** review history 摘要行（v0.8 §17）；无 review evidence 时为 [] */
+  reviewHistory: string[];
 
   /** 缺失的 artifact id 列表（manifest 必须显式记录） */
   missingArtifacts: string[];
@@ -78,10 +82,11 @@ export interface HandoffCompileInput {
   verification: HandoffManifest['verification'];
   acceptance: HandoffManifest['acceptance'];
 
-  /** run 内的源文件清单（execution reports / verification attempts / acceptance records） */
+  /** run 内的源文件清单（execution reports / verification attempts / acceptance records / review attempts） */
   sourceLists: {
     execution_reports: string[];
     verification_attempts: string[];
     acceptance_records: string[];
+    review_attempts: string[];
   };
 }

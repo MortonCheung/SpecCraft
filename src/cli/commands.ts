@@ -150,7 +150,7 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
       } catch {
         // 读取 tasks 失败不阻塞 status
       }
-      // v0.8 §91：Review 简要信息
+      // v0.8 §91：Review 简要信息 + §19 failed tasks 计数（只统计 review 原因失败的 task）
       try {
         const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
         const reviewPlan = await readReviewPlanOrNull(speccraftDir, run.id);
@@ -158,6 +158,21 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
           console.log('Review:');
           console.log(`  enabled`);
           console.log(`  gates: ${reviewPlan.gates.map((g) => g.id).join(', ')}`);
+          const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+          const graph = await readTaskGraphOrNull(speccraftDir, run.id);
+          if (graph) {
+            const manifests = await readAllTaskManifests(speccraftDir, run.id);
+            const { refreshStates } = await import('../core/tasks/dependency.js');
+            const statuses = refreshStates(graph, manifests);
+            const failedTasks = graph.tasks.filter((t) => statuses.get(t.id) === 'failed');
+            let reviewFailed = 0;
+            for (const t of failedTasks) {
+              const { latestReviewGateStates } = await import('../core/reviews/feedback.js');
+              const gates = await latestReviewGateStates(speccraftDir, run.id, t.id);
+              if (gates.some((g) => g.decision === 'changes_required' || g.decision === 'error')) reviewFailed += 1;
+            }
+            console.log(`  failed tasks: ${reviewFailed}`);
+          }
         }
       } catch {
         // 读取 review 失败不阻塞 status
@@ -340,11 +355,27 @@ async function taskGraphGuidance(projectRoot: string, speccraftDir: string, runI
     const blockedFailed = failed.map((id) => blockedByTask.get(id)).find((b) => b);
     if (blockedFailed) return executorBlockedMessage(blockedFailed);
 
-    // v0.8 §93：review rework guidance
+    // v0.8 §19/§21：review failed guidance（changes_required rework + review ERROR）。
+    // review ERROR 即使没有 blocker findings 也必须明确引导，不得退化成普通 unknown failure。
     const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
     const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
     if (reviewPlan?.enabled) {
-      const { compileLatestReviewFeedback } = await import('../core/reviews/feedback.js');
+      const { compileLatestReviewFeedback, latestReviewGateStates } = await import('../core/reviews/feedback.js');
+      for (const id of failed) {
+        const gateStates = await latestReviewGateStates(speccraftDir, runId, id);
+        const errorGate = gateStates.find((g) => g.decision === 'error');
+        if (errorGate) {
+          return [
+            `Task ${id} review ERROR（gate ${errorGate.gateId}${errorGate.errorCode ? `，error_code ${errorGate.errorCode}` : ''}）。`,
+            '',
+            'Inspect:',
+            `  speccraft reviews show ${id}`,
+            '',
+            'Rework:',
+            `  speccraft tasks reopen ${id}`,
+          ].join('\n');
+        }
+      }
       for (const id of failed) {
         const fb = await compileLatestReviewFeedback(speccraftDir, runId, id);
         if (fb.hasBlockingFeedback) {
@@ -1100,6 +1131,9 @@ async function validateExecutionConsistency(
   // ---- Executor Plan 一致性（v0.7 §55：Executor invariants） ----
   violations.push(...(await checkExecutorPlanConsistency(speccraftDir, run.id)));
 
+  // ---- Review 一致性（v0.8 §16：Review invariants） ----
+  violations.push(...(await checkReviewConsistency(speccraftDir, run.id)));
+
   return violations;
 }
 
@@ -1117,6 +1151,194 @@ function checkWorkflowStagesInvariant(workflow: Workflow): string[] {
     }
   }
   return [];
+}
+
+/**
+ * Review 一致性（v0.8 §16）。
+ *
+ * 只读 frozen Review Plan / task graph + manifests / review attempt manifests /
+ * dispatch / verification / workspace evidence，不修改任何状态。
+ * review disabled 或无 frozen plan → 无 Review invariant（legacy 兼容跳过）。
+ */
+async function checkReviewConsistency(
+  speccraftDir: string,
+  runId: string,
+): Promise<string[]> {
+  const violations: string[] = [];
+  const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+  const { isValidReviewGateKind, listReviewAttempts, listTaskReviewEvidence } = await import('../core/reviews/attempt.js');
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled) return violations;
+
+  // ---- Plan（§16 Plan invariants） ----
+  if (plan.run_id !== runId) {
+    violations.push(`Review Plan run_id ${plan.run_id} 不匹配 Run ID ${runId}`);
+  }
+  const gateIds = plan.gates.map((g) => g.id);
+  if (new Set(gateIds).size !== gateIds.length) {
+    violations.push('Review Plan gate ids 重复');
+  }
+  for (const g of plan.gates) {
+    if (!isValidReviewGateKind(g.kind)) {
+      violations.push(`Review Plan gate ${g.id} 的 kind 非法：${g.kind}`);
+    }
+  }
+
+  const { readTaskGraphOrNull, readAllTaskManifests } = await import('../core/tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  const graphTaskIds = new Set((graph?.tasks ?? []).map((t) => t.id));
+  const byGate = new Map(plan.gates.map((g) => [g.id, g]));
+
+  // dispatch evidence（global attempt number → manifest；供 source/session reference 检查）
+  const { listDispatchAttempts, readDispatchAttempt } = await import('../core/dispatch/store.js');
+  const dispatchByNumber = new Map<number, { task_id?: string; session_id?: string }>();
+  for (const a of await listDispatchAttempts(speccraftDir, runId)) {
+    const dm = await readDispatchAttempt(speccraftDir, runId, a);
+    if (dm) dispatchByNumber.set(a, dm);
+  }
+
+  // ---- Attempt references / Source Evidence / Mutation / Session independence ----
+  const { listTaskVerificationAttempts } = await import('../core/tasks/verification/lifecycle.js');
+  for (const t of graph?.tasks ?? []) {
+    const existingVerification = new Set(await listTaskVerificationAttempts(speccraftDir, runId, t.id));
+    for (const gate of plan.gates) {
+      const attempts = await listReviewAttempts(speccraftDir, runId, t.id, gate.id);
+      if (attempts.length === 0) continue;
+      const seenSessions = new Set<string>();
+      for (const m of attempts) {
+        const label = `task ${t.id} gate ${gate.id} attempt ${m.attempt}`;
+        // Attempt references：reviewer_profile / adapter 必须与 frozen gate 一致
+        if (m.reviewer_profile !== gate.reviewer) {
+          violations.push(`Review ${label} reviewer_profile（${m.reviewer_profile}）≠ frozen gate.reviewer（${gate.reviewer}）`);
+        }
+        if (m.adapter !== gate.adapter) {
+          violations.push(`Review ${label} adapter（${m.adapter}）≠ frozen gate.adapter（${gate.adapter}）`);
+        }
+        // Mutation：error_code == reviewer_mutation 时 decision 不得是 pass
+        if (m.error_code === 'reviewer_mutation' && m.decision === 'pass') {
+          violations.push(`Review ${label} error_code=reviewer_mutation，但 decision 为 pass（不得放行）`);
+        }
+        // Session independence：同 task 的 review session 不得等于 executor dispatch session
+        const dm = dispatchByNumber.get(m.source_dispatch_attempt);
+        if (m.session_id && dm?.session_id && m.session_id === dm.session_id) {
+          violations.push(`Review ${label} session 不得等于 executor dispatch session（source dispatch ${m.source_dispatch_attempt}）`);
+        }
+        // 同 Gate 多 attempts：非空 session_id 不得重复
+        if (m.session_id) {
+          if (seenSessions.has(m.session_id)) {
+            violations.push(`Review ${label} 复用 session ${m.session_id}（同 gate 多 attempts 必须 fresh session）`);
+          }
+          seenSessions.add(m.session_id);
+        }
+        // Source Evidence：source dispatch attempt 必须真实存在且属于同一 task
+        const srcDispatch = dispatchByNumber.get(m.source_dispatch_attempt);
+        if (!srcDispatch || srcDispatch.task_id !== t.id) {
+          violations.push(`Review ${label} 引用不存在的 source dispatch attempt ${m.source_dispatch_attempt}（task ${t.id}）`);
+        }
+        // Source Evidence：source verification attempt 必须真实存在
+        if (!existingVerification.has(m.source_verification_attempt)) {
+          violations.push(`Review ${label} 引用不存在的 source verification attempt ${m.source_verification_attempt}`);
+        }
+        // Source Evidence：Review PASS 要求 source verification PASS
+        if (m.decision === 'pass' && existingVerification.has(m.source_verification_attempt)) {
+          const vPassed = await readVerificationPassed(speccraftDir, runId, t.id, m.source_verification_attempt);
+          if (vPassed !== true) {
+            violations.push(`Review ${label} decision=pass，但 source verification attempt ${m.source_verification_attempt} 不是 PASS`);
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Completion / Stale Evidence（§16） ----
+  // Review evidence 引用已不存在的 task / gate（plan 外 gate）—— 遍历 evidence 目录
+  const { readdir } = await import('node:fs/promises');
+  const tasksRoot = path.join(speccraftDir, 'runs', runId, 'tasks');
+  let taskDirs: string[] = [];
+  try {
+    taskDirs = (await readdir(tasksRoot, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    taskDirs = [];
+  }
+  for (const taskId of taskDirs) {
+    if (taskId.startsWith('.')) continue;
+    const gateEvidence = await listTaskReviewEvidence(speccraftDir, runId, taskId);
+    for (const { gateId, attempts } of gateEvidence) {
+      if (!byGate.has(gateId)) {
+        violations.push(`Review evidence 的 gate ${gateId}（task ${taskId}）不在 frozen Review Plan`);
+      }
+      if (attempts.length > 0 && !graphTaskIds.has(taskId)) {
+        violations.push(`Review evidence 引用不存在的 task：${taskId}（gate ${gateId}）`);
+      }
+    }
+  }
+
+  // 有 Task Graph 时断言 completion invariants
+  if (graph) {
+    const manifests = await readAllTaskManifests(speccraftDir, runId);
+    const { isCurrentReviewSatisfied } = await import('../core/reviews/feedback.js');
+    for (const t of graph.tasks) {
+      const m = manifests.get(t.id);
+      if (m?.status !== 'completed') continue;
+      const dispatchAttempts = [...dispatchByNumber.keys()]
+        .filter((n) => dispatchByNumber.get(n)?.task_id === t.id)
+        .sort((a, b) => a - b);
+      const verificationAttempts = await listTaskVerificationAttempts(speccraftDir, runId, t.id);
+      if (dispatchAttempts.length === 0 || verificationAttempts.length === 0) continue;
+      const latestDispatch = dispatchAttempts[dispatchAttempts.length - 1];
+      const latestVerification = verificationAttempts[verificationAttempts.length - 1];
+      const r = await isCurrentReviewSatisfied(
+        speccraftDir, runId, t.id, latestDispatch, latestVerification,
+      );
+      if (!r.satisfied) {
+        violations.push(`Task ${t.id} completed，但 required review gates 未满足最新 dispatch/verification（${latestDispatch}/${latestVerification}）：${r.reason}`);
+      }
+    }
+
+    // Parallel：workspace integrated → required review gates satisfied（§16 Parallel）
+    const { listWorkspaceAttempts, readWorkspace } = await import('../core/workspaces/store.js');
+    for (const t of graph.tasks) {
+      for (const attemptNum of await listWorkspaceAttempts(speccraftDir, runId, t.id)) {
+        const wm = await readWorkspace(speccraftDir, runId, t.id, attemptNum);
+        if (!wm || wm.status !== 'integrated') continue;
+        const wDispatch = wm.dispatchAttempts?.filter((n) => dispatchByNumber.has(n)).sort((a, b) => a - b) ?? [];
+        const wVerification = [...(wm.verificationAttempts ?? [])].sort((a, b) => a - b);
+        if (wDispatch.length === 0 || wVerification.length === 0) continue;
+        const r = await isCurrentReviewSatisfied(
+          speccraftDir, runId, t.id, wDispatch[wDispatch.length - 1], wVerification[wVerification.length - 1],
+        );
+        if (!r.satisfied) {
+          violations.push(`Task ${t.id} workspace attempt ${attemptNum} 已 integrated，但 required review gates 未满足：${r.reason}`);
+        }
+      }
+    }
+  }
+
+  return violations;
+}
+
+/** 读取某 task 的 verification attempt manifest 的 passed 字段（缺失/损坏 → null） */
+async function readVerificationPassed(
+  speccraftDir: string,
+  runId: string,
+  taskId: string,
+  attempt: number,
+): Promise<boolean | null> {
+  const { readFile } = await import('node:fs/promises');
+  const yaml = (await import('js-yaml')).default;
+  const file = path.join(
+    speccraftDir, 'runs', runId, 'tasks', taskId, 'verification',
+    `attempt-${String(attempt).padStart(3, '0')}`, 'manifest.yaml',
+  );
+  try {
+    const parsed = yaml.load(await readFile(file, 'utf8')) as { passed?: unknown } | null;
+    if (parsed && typeof parsed.passed === 'boolean') return parsed.passed;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1670,6 +1892,22 @@ export async function cmdTasksNext(projectRoot: string = process.cwd()): Promise
 
   if (hasFailedTask(statuses)) {
     const failed = graph.tasks.filter((t) => statuses.get(t.id) === 'failed').map((t) => t.id);
+    // v0.8 §19：review failed 任务优先引导 reviews show / tasks reopen
+    const { readReviewPlanOrNull } = await import('../core/reviews/store.js');
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    if (reviewPlan?.enabled) {
+      const { latestReviewGateStates } = await import('../core/reviews/feedback.js');
+      for (const id of failed) {
+        const gates = await latestReviewGateStates(speccraftDir, runId, id);
+        const failedGate = gates.find((g) => g.decision === 'changes_required' || g.decision === 'error');
+        if (failedGate) {
+          console.log(`Task ${id} review ${failedGate.decision === 'error' ? 'ERROR' : 'rework required'}（gate ${failedGate.gateId}）。`);
+          console.log(`查看：speccraft reviews show ${id}`);
+          console.log(`重开：speccraft tasks reopen ${id}`);
+          return 1;
+        }
+      }
+    }
     console.log(`有 failed Task：${failed.join(', ')}`);
     console.log('修复后：speccraft tasks reopen <id> 或直接 speccraft dispatch --task <id>');
     return 1;
@@ -2282,6 +2520,7 @@ export async function cmdExecute(
     freshSession: opts.freshSession === true,
     ...(adapterConfig ? { adapterConfig } : {}),
     ...(executorResolver ? { executorResolver } : {}),
+    ...(config.hooks ? { hooks: config.hooks } : {}),
     ...(reviewPlan ? { reviewPlan } : {}),
   });
 

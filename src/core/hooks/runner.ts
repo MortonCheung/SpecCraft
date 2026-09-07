@@ -185,6 +185,10 @@ function toEnv(env: HookEnvironment): Record<string, string> {
     'SPECCRAFT_WORKSPACE_ROOT',
     'SPECCRAFT_WORKSPACE_ATTEMPT',
     'SPECCRAFT_WAVE',
+    'SPECCRAFT_REVIEW_GATE',
+    'SPECCRAFT_REVIEW_ATTEMPT',
+    'SPECCRAFT_REVIEWER_PROFILE',
+    'SPECCRAFT_REVIEW_DECISION',
   ] as const) {
     const v = env[key];
     if (v) out[key] = v;

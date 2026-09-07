@@ -95,6 +95,78 @@ export async function compileLatestReviewFeedback(
   return { taskId, hasBlockingFeedback, findings, gateDecisions };
 }
 
+/** 单个 Review Gate 的最新 attempt 状态（无 evidence 时 decision 为 'none'） */
+export interface ReviewGateLatestState {
+  gateId: string;
+  decision: ReviewDecision | 'none';
+  attempt: number;
+  errorCode?: string;
+}
+
+/** 单 Task 的最新 Review Gate 决策摘要（供 Aggregate Report 引用；无 evidence 时为空） */
+export interface TaskReviewDecisionSummary {
+  /** 如 "review [spec_compliance PASS，code_quality PASS]"（含前导逗号），无则空串 */
+  inline: string;
+  /** 该 Task 是否存在至少一条真实 review evidence（reviews/ 目录） */
+  hasEvidence: boolean;
+}
+
+/**
+ * §18：Aggregate Report 只引用 Evidence，不允许 AI 二次总结。
+ *
+ * 按 frozen Review Plan gate 顺序汇总各 gate 最新 decision（gate.decision 大写），
+ * 只统计存在真实 attempt 的 gate；plan disabled / 无 evidence → inline 空串、hasEvidence false。
+ */
+export async function summarizeTaskReviews(
+  speccraftDir: string,
+  runId: string,
+  taskId: string,
+): Promise<TaskReviewDecisionSummary> {
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled || plan.gates.length === 0) {
+    return { inline: '', hasEvidence: false };
+  }
+  const states = await latestReviewGateStates(speccraftDir, runId, taskId);
+  const present = states.filter((s) => s.decision !== 'none');
+  if (present.length === 0) {
+    return { inline: '', hasEvidence: false };
+  }
+  const parts = present.map((s) => `${s.gateId} ${s.decision.toUpperCase()}`);
+  return { inline: `，review [${parts.join('，')}]`, hasEvidence: true };
+}
+
+/**
+ * 按 frozen Review Plan gate 顺序读取某 Task 各 gate 的最新 review attempt 状态。
+ *
+ * v0.8 §19/§21：供 status（failed tasks 计数）与 next（review rework / review ERROR
+ * 引导）复用；只读最新 attempt manifest，不调用 AI。
+ */
+export async function latestReviewGateStates(
+  speccraftDir: string,
+  runId: string,
+  taskId: string,
+): Promise<ReviewGateLatestState[]> {
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled) return [];
+
+  const states: ReviewGateLatestState[] = [];
+  for (const gate of plan.gates) {
+    const evidenceDir = reviewEvidenceDir(speccraftDir, runId, taskId, gate.id);
+    const manifest = await readLatestReviewAttemptManifest(evidenceDir);
+    if (!manifest) {
+      states.push({ gateId: gate.id, decision: 'none', attempt: 0 });
+      continue;
+    }
+    states.push({
+      gateId: gate.id,
+      decision: manifest.decision,
+      attempt: manifest.attempt,
+      ...(manifest.error_code ? { errorCode: manifest.error_code } : {}),
+    });
+  }
+  return states;
+}
+
 /**
  * Check if current review plan is satisfied for a task（§72）。
  *

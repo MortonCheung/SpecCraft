@@ -21,6 +21,7 @@ import { dispatchTask } from './dispatch.js';
 import { verifyTask } from './verification/lifecycle.js';
 import { implementStart, implementFinish } from '../execution/lifecycle.js';
 import { runDir, readRun } from '../execution/store.js';
+import type { HookConfig } from '../hooks/types.js';
 import type { ReviewPlan } from '../reviews/types.js';
 
 export interface ExecuteOptions {
@@ -32,11 +33,11 @@ export interface ExecuteOptions {
   executionGuard: string;
   adapterConfig?: { command?: string; timeout_seconds?: number; extra_args?: string[]; model?: string; sandbox?: string };
   freshSession?: boolean;
-  /**
-   * v0.7 ExecutorResolver（ADR 0008 §38）。提供时按 task 从 frozen plan.yaml 解析
-   * Executor → Adapter；缺省退化为 legacy single-executor fallback（options.adapter）。
-   */
+  /** v0.7 ExecutorResolver（ADR 0008 §38）。提供时按 task 从 frozen plan.yaml 解析
+   * Executor → Adapter；缺省退化为 legacy single-executor fallback（options.adapter）。 */
   executorResolver?: ExecutorResolver;
+  /** 项目级 hooks（§13：review 生命周期接线 before_review/after_review） */
+  hooks?: HookConfig;
   /** v0.8：frozen Review Plan（ADR 0009 §18）。enabled=true 时启用 Independent Review Gates。 */
   reviewPlan?: ReviewPlan | null;
 }
@@ -223,6 +224,7 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
         postCommit: post.commitId,
         diffPatch: delta.patch,
         executionGuard: options.executionGuard,
+        ...(options.hooks ? { hooks: options.hooks } : {}),
       });
 
       if (reviewResult.decision !== 'pass') {
@@ -273,6 +275,7 @@ async function generateAggregateReport(
 ): Promise<string> {
   const { listDispatchAttemptsForTask } = await import('../dispatch/store.js');
   const { listTaskVerificationAttempts } = await import('./verification/lifecycle.js');
+  const { summarizeTaskReviews } = await import('../reviews/feedback.js');
 
   const lines: string[] = [
     '# Execution Report（Aggregate）',
@@ -283,36 +286,17 @@ async function generateAggregateReport(
     '## Task 汇总',
     '',
   ];
+  const reviewEvidence: string[] = [];
   for (const t of graph.tasks) {
     const m = manifests.get(t.id);
     const dA = await listDispatchAttemptsForTask(speccraftDir, runId, t.id);
     const vA = await listTaskVerificationAttempts(speccraftDir, runId, t.id);
-    let reviewInfo = '';
-    try {
-      const { readReviewPlanOrNull } = await import('../reviews/store.js');
-      const { reviewEvidenceDir } = await import('../reviews/paths.js');
-      const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
-      if (reviewPlan?.enabled && reviewPlan.gates.length > 0) {
-        const gateResults: string[] = [];
-        for (const gate of reviewPlan.gates) {
-          const evidenceDir = reviewEvidenceDir(speccraftDir, runId, t.id, gate.id);
-          let latestDecision = 'none';
-          try {
-            const { readdir } = await import('node:fs/promises');
-            const entries = await readdir(evidenceDir);
-            const attempts = entries.filter((e) => /^attempt-\d+$/.test(e)).sort();
-            if (attempts.length > 0) {
-              const { readReviewManifestOrNull } = await import('../reviews/attempt.js');
-              const manifest = await readReviewManifestOrNull(`${evidenceDir}/${attempts[attempts.length - 1]}/manifest.yaml`);
-              if (manifest) latestDecision = manifest.decision;
-            }
-          } catch { /* no evidence */ }
-          gateResults.push(`${gate.id} ${latestDecision.toUpperCase()}`);
-        }
-        reviewInfo = `，review [${gateResults.join('，')}]`;
-      }
-    } catch { /* review not available */ }
-    lines.push(`- ${t.id}: ${m?.status ?? '?'}（dispatch [${dA.join(', ')}]，verify [${vA.join(', ')}]${reviewInfo}）`);
+    // §18：Review Evidence 是只读引用，不允许 AI 二次总结
+    const review = await summarizeTaskReviews(speccraftDir, runId, t.id);
+    if (review.hasEvidence) {
+      reviewEvidence.push(`- ${t.id}: runs/${runId}/tasks/${t.id}/reviews/`);
+    }
+    lines.push(`- ${t.id}: ${m?.status ?? '?'}（dispatch [${dA.join(', ')}]，verify [${vA.join(', ')}]${review.inline}）`);
   }
   lines.push('');
   lines.push('## 证据引用');
@@ -320,10 +304,13 @@ async function generateAggregateReport(
   for (const t of graph.tasks) {
     lines.push(`- ${t.id}: runs/${runId}/tasks/${t.id}/verification/`);
   }
+  if (reviewEvidence.length > 0) {
+    for (const ref of reviewEvidence) lines.push(ref);
+  }
   lines.push('');
   lines.push('## 已知问题');
   lines.push('');
-  lines.push('（见各 Task 的 dispatch / verification evidence）');
+  lines.push('（见各 Task 的 dispatch / verification / review evidence）');
   lines.push('');
 
   const run = await readRun(speccraftDir, runId);

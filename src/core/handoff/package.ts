@@ -16,6 +16,7 @@ import {
   compileVerificationHistory,
   compileAcceptanceHistory,
   compileExecutorHistory,
+  compileReviewHistory,
   compileGitSnapshot,
   renderHandoffDoc,
   renderDecisionsDoc,
@@ -54,6 +55,7 @@ export async function compileHandoffPackage(
   const verificationHistory = await compileVerificationHistory(speccraftDir, run.id);
   const acceptanceHistory = await compileAcceptanceHistory(speccraftDir, run.id);
   const executorHistory = await compileExecutorHistory(speccraftDir, run.id);
+  const reviewHistory = await compileReviewHistory(speccraftDir, run.id);
   const git = await compileGitSnapshot(projectRoot);
   const sourceLists = await makeSourceLists(speccraftDir, run.id);
 
@@ -69,6 +71,7 @@ export async function compileHandoffPackage(
     verificationHistory,
     acceptanceHistory,
     executorHistory,
+    reviewHistory,
     missingArtifacts,
     git,
     verification: {
@@ -95,6 +98,11 @@ export async function compileHandoffPackage(
     'executor-history.md': `# Executor History\n\n${executorHistory.join('\n')}\n`,
     'manifest.yaml': manifestYaml,
   };
+
+  // Review History（v0.8 §17：有 Review evidence 时确定性生成，不调 AI）
+  if (reviewHistory.length > 0) {
+    files['review-history.md'] = reviewHistory.join('\n') + '\n';
+  }
 
   // Task History（v0.5：有 Task Graph 时确定性生成，不调 AI）
   const taskHistory = await compileTaskHistory(speccraftDir, run.id);

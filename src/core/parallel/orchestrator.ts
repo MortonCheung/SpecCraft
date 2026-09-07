@@ -615,6 +615,8 @@ async function executeIsolatedTask(
       }
 
       // §Fix 2：使用 dispatch/verify 实际返回的 attempt，不再从 stale manifest 推导
+      // §13/§14：parallel Review Attempt —— hooks 透传（before/after_review），manifest 必须写
+      // workspace_attempt，hook env 保留 SPECCRAFT_WORKSPACE_ROOT / WORKSPACE_ATTEMPT / WAVE。
       const reviewResult = await executeSequentialReviewGates({
         projectRoot: ctx.workspaceRoot,
         speccraftDir,
@@ -629,6 +631,13 @@ async function executeIsolatedTask(
         postCommit: postSnap.commitId,
         diffPatch: delta.patch,
         executionGuard: options.executionGuard,
+        ...(options.hooks ? { hooks: options.hooks } : {}),
+        workspaceAttempt: ctx.attempt,
+        hookEnv: {
+          SPECCRAFT_WORKSPACE_ROOT: ctx.workspaceRoot,
+          SPECCRAFT_WORKSPACE_ATTEMPT: String(ctx.attempt),
+          SPECCRAFT_WAVE: String(wave),
+        },
       });
 
       if (reviewResult.decision !== 'pass') {
@@ -853,6 +862,7 @@ async function generateParallelAggregateReport(
   const { listDispatchAttemptsForTask } = await import('../dispatch/store.js');
   const { listTaskVerificationAttempts } = await import('../tasks/verification/lifecycle.js');
   const { listWaves, readWaveManifest } = await import('../workspaces/store.js');
+  const { summarizeTaskReviews } = await import('../reviews/feedback.js');
 
   const lines: string[] = [
     '# Execution Report（Aggregate · Parallel）',
@@ -876,21 +886,33 @@ async function generateParallelAggregateReport(
   lines.push('');
   lines.push('## Task 汇总');
   lines.push('');
+  const reviewEvidence: string[] = [];
   for (const t of graph.tasks) {
     const m = manifests.get(t.id);
     const dA = await listDispatchAttemptsForTask(speccraftDir, runId, t.id);
     const vA = await listTaskVerificationAttempts(speccraftDir, runId, t.id);
-    lines.push(`- ${t.id}: ${m?.status ?? '?'}（dispatch [${dA.join(', ')}]，verify [${vA.join(', ')}]）`);
+    // §18：Review Evidence 是只读引用，不允许 AI 二次总结
+    const review = await summarizeTaskReviews(speccraftDir, runId, t.id);
+    if (review.hasEvidence) {
+      reviewEvidence.push(`- ${t.id}: runs/${runId}/tasks/${t.id}/reviews/`);
+    }
+    lines.push(`- ${t.id}: ${m?.status ?? '?'}（dispatch [${dA.join(', ')}]，verify [${vA.join(', ')}]${review.inline}）`);
   }
   lines.push('');
   lines.push('## Integration Commits');
   lines.push('');
   for (const c of partial.integrationCommits) lines.push(`- ${c}`);
   if (partial.integrationCommits.length === 0) lines.push('- （无）');
+  if (reviewEvidence.length > 0) {
+    lines.push('');
+    lines.push('## Review Evidence');
+    lines.push('');
+    for (const ref of reviewEvidence) lines.push(ref);
+  }
   lines.push('');
   lines.push('## 已知问题');
   lines.push('');
-  lines.push('（见各 Task 的 dispatch / verification / workspace evidence）');
+  lines.push('（见各 Task 的 dispatch / verification / review / workspace evidence）');
   lines.push('');
 
   const run = await readRun(speccraftDir, runId);

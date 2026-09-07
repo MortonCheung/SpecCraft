@@ -17,6 +17,7 @@
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { TaskDefinition } from '../tasks/types.js';
+import type { HookConfig } from '../hooks/types.js';
 import type { FrozenReviewGate, ReviewDecision } from './types.js';
 import type { ReviewPackage } from './package.js';
 import { reviewEvidenceDir, reviewWorktreePath } from './paths.js';
@@ -39,6 +40,12 @@ export interface ExecuteSequentialReviewGatesOptions {
   diffPatch: string;
   /** §11.2：Execution Guard 真实文本（orchestrator 已加载的同一份） */
   executionGuard: string;
+  /** §13：review hooks（before_review blocking / after_review non-rollback） */
+  hooks?: HookConfig;
+  /** §13.3：parallel 附加 hook env（SPECCRAFT_WORKSPACE_ROOT / ATTEMPT / WAVE 等） */
+  hookEnv?: Record<string, string>;
+  /** §14：parallel 时 workspace attempt（sequential 可 absent） */
+  workspaceAttempt?: number;
 }
 
 export interface SequentialReviewResult {
@@ -74,6 +81,9 @@ export async function executeSequentialReviewGates(
     postCommit,
     diffPatch,
     executionGuard,
+    hooks,
+    hookEnv,
+    workspaceAttempt,
   } = options;
 
   const gateResults: SequentialReviewResult['gateResults'] = [];
@@ -138,8 +148,11 @@ export async function executeSequentialReviewGates(
       await writeFile(path.join(attemptDir, 'reviewer-prompt.md'), prompt, 'utf-8');
 
       // run review gate（§62：fresh session，独立 Evidence Namespace；§57：绑定 source evidence）
+      // §13：review hooks 在 runner 内接线（before_review = package prepared → invocation 之前；
+      //       after_review = final decision + Evidence 落盘之后，non-rollback）
       const runResult = await runReviewGate({
         projectRoot,
+        speccraftDir,
         runId,
         runDir: path.join(speccraftDir, 'runs', runId),
         task,
@@ -153,6 +166,9 @@ export async function executeSequentialReviewGates(
         postTree,
         preCommit,
         postCommit,
+        ...(hooks ? { hooks } : {}),
+        ...(hookEnv ? { hookEnv } : {}),
+        ...(workspaceAttempt !== undefined ? { workspaceAttempt } : {}),
       });
 
       // §44 + §6.2：mutation guard 已由 runner finalization 在写 manifest 前置执行

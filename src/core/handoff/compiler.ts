@@ -69,6 +69,81 @@ export async function compileHandoffContext(
   return { markdown, missing };
 }
 
+/**
+ * 编译 review history 摘要（v0.8 §17）。
+ *
+ * 确定性编译 Review Attempt Evidence（不调用 AI、不复制 Finding 正文）。
+ * 稳定顺序：Task Graph order → Frozen Review Plan gate order → attempt ascending。
+ * 无 Review Plan / review disabled / 无任何 review attempt → 返回 []（不写文件）。
+ *
+ * 数据源：frozen Review Plan + runs/<run>/tasks/<task>/reviews/<gate>/attempt-NNN/manifest.yaml。
+ */
+export async function compileReviewHistory(speccraftDir: string, runId: string): Promise<string[]> {
+  const { readReviewPlanOrNull } = await import('../reviews/store.js');
+  const plan = await readReviewPlanOrNull(speccraftDir, runId);
+  if (!plan || !plan.enabled || plan.gates.length === 0) return [];
+
+  const { readTaskGraphOrNull } = await import('../tasks/store.js');
+  const graph = await readTaskGraphOrNull(speccraftDir, runId);
+  if (!graph) return [];
+
+  const { listReviewAttempts } = await import('../reviews/attempt.js');
+  const { tasksDir } = await import('../tasks/store.js');
+
+  const lines: string[] = ['# Review History', '', `Run: ${runId}`, '', '## Review Attempts', ''];
+  let total = 0;
+  for (const t of graph.tasks) {
+    for (const gate of plan.gates) {
+      const attempts = await listReviewAttempts(speccraftDir, runId, t.id, gate.id);
+      if (attempts.length === 0) continue;
+      total += attempts.length;
+      lines.push(`### ${t.id} / ${gate.id}`);
+      for (const m of attempts) {
+        lines.push('');
+        lines.push(`#### Attempt ${m.attempt}`);
+        lines.push(`- kind: ${m.gate_kind}`);
+        lines.push(`- reviewer profile: ${m.reviewer_profile}`);
+        lines.push(`- adapter: ${m.adapter}`);
+        lines.push(`- review attempt: ${m.attempt}`);
+        lines.push(`- source dispatch attempt: ${m.source_dispatch_attempt}`);
+        lines.push(`- source verification attempt: ${m.source_verification_attempt}`);
+        if (m.workspace_attempt !== undefined) {
+          lines.push(`- workspace attempt: ${m.workspace_attempt}`);
+        } else {
+          lines.push('- workspace attempt: （无）');
+        }
+        lines.push(`- decision: ${m.decision}`);
+        lines.push(`- error code: ${m.error_code ?? '（无）'}`);
+        lines.push(`- blocking findings: ${m.blocking_findings}`);
+        lines.push(`- minor findings: ${await countMinorFindings(path.join(tasksDir(speccraftDir, runId), t.id, 'reviews', gate.id, `attempt-${String(m.attempt).padStart(3, '0')}`))}`);
+        lines.push(`- review session: ${m.session_id ?? '（无）'}`);
+        lines.push(`- started at: ${m.started_at}`);
+        lines.push(`- finished at: ${m.finished_at}`);
+      }
+      lines.push('');
+    }
+  }
+  if (total === 0) return [];
+  return lines;
+}
+
+/** 统计 attempt 目录 findings.yaml 中 minor severity 数量（§17；error/无 findings 时文件不存在 → 0） */
+async function countMinorFindings(attemptDir: string): Promise<number> {
+  const findingsPath = path.join(attemptDir, 'findings.yaml');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(findingsPath, 'utf8'));
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(parsed)) return 0;
+  let minor = 0;
+  for (const f of parsed) {
+    if (f && typeof f === 'object' && (f as { severity?: unknown }).severity === 'minor') minor += 1;
+  }
+  return minor;
+}
+
 /** 编译 execution history 摘要（Run 报告 + 生命周期，不删失败/reject 历史） */
 export async function compileExecutionHistory(
   speccraftDir: string,
@@ -278,6 +353,12 @@ export function renderHandoffDoc(input: HandoffCompileInput): string {
     '',
     ...input.executorHistory,
     '',
+    '## Review history 摘要',
+    '',
+    ...(input.reviewHistory.length > 0
+      ? input.reviewHistory
+      : ['（无 review attempt：review disabled 或 Run 无 review evidence）']),
+    '',
     '## 如何继续接手',
     '',
     '1. 阅读本目录下 HANDOFF.md 与 context.md；',
@@ -313,6 +394,7 @@ export function renderManifestYaml(input: HandoffCompileInput): string {
       execution_reports: input.sourceLists.execution_reports,
       verification_attempts: input.sourceLists.verification_attempts,
       acceptance_records: input.sourceLists.acceptance_records,
+      review_attempts: input.sourceLists.review_attempts,
     },
     files: [
       'HANDOFF.md',
@@ -324,10 +406,11 @@ export function renderManifestYaml(input: HandoffCompileInput): string {
       'executor-history.md',
       'verification-history.md',
       'acceptance-history.md',
+      ...(input.reviewHistory.length > 0 ? ['review-history.md'] : []),
       'manifest.yaml',
     ],
   };
-  // sources.execution_reports / verification_attempts / acceptance_records 由 lifecycle 填充
+  // sources.execution_reports / verification_attempts / acceptance_records / review_attempts 由 lifecycle 填充
   return yaml.dump(manifest, { indent: 2, lineWidth: -1, noRefs: true });
 }
 
@@ -355,16 +438,31 @@ async function pathExists(p: string): Promise<boolean> {
 export function makeSourceLists(
   speccraftDir: string,
   runId: string,
-): Promise<{ execution_reports: string[]; verification_attempts: string[]; acceptance_records: string[] }> {
+): Promise<{
+  execution_reports: string[];
+  verification_attempts: string[];
+  acceptance_records: string[];
+  review_attempts: string[];
+}> {
   return listRunSources(speccraftDir, runId);
 }
 
 async function listRunSources(
   speccraftDir: string,
   runId: string,
-): Promise<{ execution_reports: string[]; verification_attempts: string[]; acceptance_records: string[] }> {
+): Promise<{
+  execution_reports: string[];
+  verification_attempts: string[];
+  acceptance_records: string[];
+  review_attempts: string[];
+}> {
   const base = runDir(speccraftDir, runId);
-  const result = { execution_reports: [] as string[], verification_attempts: [] as string[], acceptance_records: [] as string[] };
+  const result = {
+    execution_reports: [] as string[],
+    verification_attempts: [] as string[],
+    acceptance_records: [] as string[],
+    review_attempts: [] as string[],
+  };
   try {
     result.execution_reports = (await readdir(base)).filter((f) => /^agent-report-\d+\.md$/.test(f)).sort();
   } catch {
@@ -377,6 +475,45 @@ async function listRunSources(
   }
   try {
     result.acceptance_records = (await readdir(path.join(base, 'acceptance'))).filter((f) => /^acceptance-\d+\.md$/.test(f)).sort();
+  } catch {
+    /* ignore */
+  }
+  // §17.1：review attempt evidence（tasks/<task>/reviews/<gate>/attempt-NNN/manifest.yaml）
+  const tasksBase = path.join(base, 'tasks');
+  try {
+    const taskIds = (await readdir(tasksBase, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    for (const taskId of taskIds) {
+      const reviewsDir = path.join(tasksBase, taskId, 'reviews');
+      let gateIds: string[] = [];
+      try {
+        gateIds = (await readdir(reviewsDir, { withFileTypes: true }))
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+          .sort();
+      } catch {
+        continue;
+      }
+      for (const gateId of gateIds) {
+        const gateDir = path.join(reviewsDir, gateId);
+        let attemptDirs: string[] = [];
+        try {
+          attemptDirs = (await readdir(gateDir, { withFileTypes: true }))
+            .filter((e) => e.isDirectory() && /^attempt-\d+$/.test(e.name))
+            .map((e) => e.name)
+            .sort();
+        } catch {
+          continue;
+        }
+        for (const attemptDir of attemptDirs) {
+          result.review_attempts.push(
+            path.join('tasks', taskId, 'reviews', gateId, attemptDir, 'manifest.yaml'),
+          );
+        }
+      }
+    }
   } catch {
     /* ignore */
   }

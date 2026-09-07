@@ -69,6 +69,8 @@ export interface HookEnvironment {
   SPECCRAFT_REVIEW_ATTEMPT?: string;
   /** v0.8：reviewer profile id */
   SPECCRAFT_REVIEWER_PROFILE?: string;
+  /** v0.8：review final decision（after_review 时注入） */
+  SPECCRAFT_REVIEW_DECISION?: string;
 }
 
 /** 单个 hook 的执行结果 */
