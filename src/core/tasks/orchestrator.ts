@@ -44,7 +44,7 @@ export interface ExecuteOptions {
 export interface ExecuteResult {
   complete: boolean;
   /** complete=false 时的原因 */
-  reason?: 'failed_task' | 'blocked_graph' | 'dispatch_failed' | 'verify_failed' | 'review_failed';
+  reason?: 'failed_task' | 'blocked_graph' | 'dispatch_failed' | 'verify_failed' | 'review_failed' | 'preflight_blocked';
   /** 本次执行完成的 task 数 */
   completedTasks: number;
   /** 顺序执行的 task id 列表（确定性） */
@@ -55,12 +55,32 @@ export interface ExecuteResult {
   reviewEnabled?: boolean;
   /** v0.8：review 失败的 task id（review_failed 时） */
   reviewFailedTask?: string;
+  /** v0.8 §8.1：preflight_blocked 时的错误详情（Git readiness 等） */
+  reviewPreflightError?: string;
 }
 
 /** 执行完整 Task Graph（单写者顺序） */
 export async function executeTaskGraph(options: ExecuteOptions): Promise<ExecuteResult> {
   const { speccraftDir, runId } = options;
   const reviewEnabled = options.reviewPlan?.enabled === true && (options.reviewPlan?.gates.length ?? 0) > 0;
+
+  // §8/§8.1：Review Preflight 必须包含 Git Readiness —— fail-before-mutation。
+  // review enabled 的 v0.8 要求 Git repo + resolvable HEAD；non-Git 项目必须在此失败，
+  // 早于 implementStart / Task status mutation / Dispatch Attempt / workspace creation。
+  if (reviewEnabled) {
+    const { checkReviewGitReadiness } = await import('../reviews/preflight.js');
+    const git = checkReviewGitReadiness(options.projectRoot);
+    if (!git.ok) {
+      return {
+        complete: false,
+        reason: 'preflight_blocked',
+        completedTasks: 0,
+        executed: [],
+        reviewEnabled: true,
+        reviewPreflightError: git.error,
+      };
+    }
+  }
 
   // prepared → 显式开始施工（复用 implementStart，同 legacy dispatch）
   const runBefore = await readRun(speccraftDir, runId);
@@ -155,14 +175,36 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
         return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
       }
 
-      // 确保有变化（§40：no_changes → ERROR）
+      // §5.2/§40：no_changes → ERROR —— preTree == postTree 仍必须 FAIL
+      // （executor 未产生任何 task 变更），且不被 .speccraft runtime changes 干扰。
       if (preTree === post.treeId) {
+        const noChangeManifest = await import('./store.js').then((m) => m.readTaskManifest(speccraftDir, runId, next));
+        if (noChangeManifest) {
+          noChangeManifest.status = 'failed';
+          noChangeManifest.lastError = 'no task changes to review';
+          await writeTaskManifest(speccraftDir, runId, noChangeManifest);
+        }
         return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
       }
 
       // compute exact delta
       const delta = await computeExactDelta(options.projectRoot, preCommit!, post.commitId);
       if (!delta.ok) {
+        return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
+      }
+
+      // §5/§5.1：Runtime deterministic Scope Audit —— Scope Guard 不是 LLM judgment，
+      // 不交给 Reviewer 判断；任何 out-of-scope 变更 → Task failed + review attempts = 0。
+      // 复用既有 Scope Engine（pathMatchesScope），不新造另一套。
+      const { auditScope } = await import('../workspaces/audit.js');
+      const scopeAudit = auditScope(task.scope.paths, delta.changedPaths);
+      if (!scopeAudit.passed) {
+        const auditManifest = await import('./store.js').then((m) => m.readTaskManifest(speccraftDir, runId, next));
+        if (auditManifest) {
+          auditManifest.status = 'failed';
+          auditManifest.lastError = `scope audit FAIL: out-of-scope changes: ${scopeAudit.violations.join(', ')}`;
+          await writeTaskManifest(speccraftDir, runId, auditManifest);
+        }
         return { complete: false, reason: 'review_failed', completedTasks: countCompleted(graph, statuses), executed, reviewFailedTask: next };
       }
 

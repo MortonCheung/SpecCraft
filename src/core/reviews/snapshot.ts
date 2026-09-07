@@ -147,17 +147,24 @@ export async function captureTreeSnapshot(
 
 /**
  * Compute exact delta（§39）：`git diff-tree -p preCommit postCommit`
+ *
+ * §5：同时返回 changedPaths（`git diff-tree --name-only -r`），供 Runtime
+ * 在 Review Gates 之前做 deterministic scope audit（Scope Guard 不是 LLM judgment）。
  */
 export async function computeExactDelta(
   workspaceRoot: string,
   preCommit: string,
   postCommit: string,
-): Promise<{ ok: boolean; patch: string; error?: string }> {
+): Promise<{ ok: boolean; patch: string; changedPaths: string[]; error?: string }> {
   const result = await runGit(workspaceRoot, ['diff-tree', '-p', preCommit, postCommit]);
   if (!result.ok) {
-    return { ok: false, patch: '', error: `diff-tree failed: ${result.stderr}` };
+    return { ok: false, patch: '', changedPaths: [], error: `diff-tree failed: ${result.stderr}` };
   }
-  return { ok: true, patch: result.stdout };
+  const names = await runGit(workspaceRoot, ['diff-tree', '--no-commit-id', '--name-only', '-r', preCommit, postCommit]);
+  const changedPaths = names.ok
+    ? names.stdout.split('\n').map((s) => s.trim()).filter((s) => s.length > 0)
+    : [];
+  return { ok: true, patch: result.stdout, changedPaths };
 }
 
 /**

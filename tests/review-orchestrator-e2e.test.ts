@@ -314,13 +314,18 @@ function makeValueWritePlan(taskId: string, content: string): Record<string, unk
   return { [taskId]: { write: { 'src/a/value.txt': content } } };
 }
 
-async function compileTaskGraphForRun(speccraftDir: string, runId: string, adapterId = 'fake-reviewer'): Promise<void> {
+async function compileTaskGraphForRun(
+  speccraftDir: string,
+  runId: string,
+  adapterId = 'fake-reviewer',
+  manualBodyOverride?: string,
+): Promise<void> {
   const { registerAdapter } = await import('../src/core/execution/adapters/registry.js');
   const { manualAdapter } = await import('../src/core/execution/adapters/manual.js');
   // plan 冻结需要 registry 已知 gate adapter（后续测试用同 id cli adapter 覆盖）
   registerAdapter({ ...manualAdapter, id: adapterId } as any);
 
-  const manualBody = await readExecutionManualBody(speccraftDir);
+  const manualBody = manualBodyOverride ?? (await readExecutionManualBody(speccraftDir));
   const projectConfig = await loadProjectConfig(speccraftDir);
   await compileTaskGraph({ speccraftDir, runId, manualBody, source: 'execution-manual', projectConfig });
 }
@@ -769,6 +774,206 @@ test('E2E K — same adapter (fake-alpha): reviewer fresh session differs from e
       taskManifest.latestSessionId,
       'reviewer session must never equal executor dispatch session',
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * E2E B — Sequential Scope Violation（spec v0.8 §5/§5.1）。
+ *
+ * scope = src/**
+ * executor 修改 src/a.ts（scope 内）+ package.json（越界）
+ * verification PASS
+ *
+ * 必须（Runtime deterministic Scope Audit，不是 Reviewer judgment）：
+ *   - scope audit FAIL（manifest.lastError 含越界路径）
+ *   - task failed
+ *   - review attempts = 0（Review Gates 从未调用）
+ */
+test('E2E B — Sequential Scope Violation → scope audit FAIL（task failed, review attempts = 0）', async () => {
+  const { root, speccraftDir, runId } = await makeReadyProject(REVIEW_ENABLED_YAML);
+  try {
+    // 把默认 TASK_BLOCK 的 scope 放宽到 src/**（E2E B 规格：executor 改 src/a.ts + package.json）
+    const wideManual = (await readExecutionManualBody(speccraftDir)).replace('src/a/**', 'src/**');
+    await compileTaskGraphForRun(speccraftDir, runId, 'fake-reviewer', wideManual);
+
+    const graph = await readTaskGraph(speccraftDir, runId);
+    const taskId = graph.tasks[0].id;
+    assert.ok(
+      graph.tasks[0].scope.paths.includes('src/**'),
+      'E2E B requires a task scoped to src/**',
+    );
+
+    const scopeViolationPlan = {
+      [taskId]: { write: { 'src/a.ts': 'in-scope-change\n' }, outOfScope: ['package.json'] },
+    };
+    registerAdapter(makeFakeExecutor('work', { plan: scopeViolationPlan }));
+    registerAdapter(makeFakeReviewer('review-pass')); // 即使 reviewer 想 PASS，runtime 也必须在 Scope Audit 拦截
+
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    assert.ok(reviewPlan, 'Frozen review plan must exist');
+
+    const result = await executeTaskGraph({
+      speccraftDir, projectRoot: root, runId,
+      adapter: makeFakeExecutor('work', { plan: scopeViolationPlan }),
+      runContext: 'test', executionGuard: 'test',
+      reviewPlan: reviewPlan!,
+    });
+
+    // §5.1：scope audit FAIL → task failed → review attempts = 0
+    assert.equal(result.complete, false, 'Scope violation must not complete');
+    assert.equal(result.reason, 'review_failed');
+    assert.equal(result.reviewFailedTask, taskId);
+
+    const taskManifest = await readTaskManifest(speccraftDir, runId, taskId);
+    assert.equal(taskManifest?.status, 'failed', 'Task must be failed on scope violation');
+    assert.ok(
+      taskManifest?.lastError?.includes('scope audit FAIL'),
+      `lastError must record scope audit FAIL, got: ${taskManifest?.lastError}`,
+    );
+    assert.ok(
+      taskManifest?.lastError?.includes('package.json'),
+      'lastError must name the out-of-scope path',
+    );
+
+    let reviewDirExists = true;
+    try {
+      await access(path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'reviews'));
+    } catch {
+      reviewDirExists = false;
+    }
+    assert.equal(reviewDirExists, false, 'review attempts must be 0（Review Gates never invoked）');
+
+    const wtPath = reviewWorktreePath(root, runId, taskId, 'spec_compliance', 1);
+    await assert.rejects(access(wtPath), 'no review worktree may be created');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * §5.2 — no_changes：preTree == postTree 仍必须 FAIL（spec v0.8 §5.2）。
+ *
+ * Executor 产生 0 task 变更（no-op），verification PASS：
+ *   - task failed（lastError = 'no task changes to review'）
+ *   - review attempts = 0
+ *   - 判定不被 .speccraft runtime changes 干扰（dispatch/verification 确实写了 .speccraft evidence，
+ *     但 synthetic snapshot 已强制排除 .speccraft/**）
+ */
+test('§5.2 — no_changes：preTree == postTree → task failed（.speccraft runtime changes 不干扰）', async () => {
+  const { root, speccraftDir, runId } = await makeReadyProject(REVIEW_ENABLED_YAML);
+  try {
+    await compileTaskGraphForRun(speccraftDir, runId);
+
+    const graph = await readTaskGraph(speccraftDir, runId);
+    const taskId = graph.tasks[0].id;
+
+    // executor no-op：不写任何工作区文件（空 plan）
+    const noopPlan = {};
+    registerAdapter(makeFakeExecutor('work', { plan: noopPlan }));
+    registerAdapter(makeFakeReviewer('review-pass'));
+
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    assert.ok(reviewPlan, 'Frozen review plan must exist');
+
+    const result = await executeTaskGraph({
+      speccraftDir, projectRoot: root, runId,
+      adapter: makeFakeExecutor('work', { plan: noopPlan }),
+      runContext: 'test', executionGuard: 'test',
+      reviewPlan: reviewPlan!,
+    });
+
+    assert.equal(result.complete, false, 'No task changes must still FAIL under review');
+    assert.equal(result.reason, 'review_failed');
+    assert.equal(result.reviewFailedTask, taskId);
+
+    const taskManifest = await readTaskManifest(speccraftDir, runId, taskId);
+    assert.equal(taskManifest?.status, 'failed');
+    assert.ok(
+      taskManifest?.lastError?.includes('no task changes to review'),
+      `lastError must record no_changes, got: ${taskManifest?.lastError}`,
+    );
+
+    // §5.2 关键不变量：runtime 确实写了 .speccraft evidence（dispatch/verification 目录存在），
+    // 但 preTree == postTree 判定基于排除 .speccraft/** 的 synthetic snapshot，不受这些 changes 干扰
+    const verificationEvidenceDir = path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'verification');
+    await access(verificationEvidenceDir); // 不存在则抛错 → .speccraft runtime changes 确实发生了
+
+    let reviewDirExists = true;
+    try {
+      await access(path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'reviews'));
+    } catch {
+      reviewDirExists = false;
+    }
+    assert.equal(reviewDirExists, false, 'no review attempt when there is no task change to review');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * E2E M — Non-Git Review-Enabled → preflight_blocked（spec v0.8 §8/§8.1）。
+ *
+ * Review enabled 项目删除 .git 后执行 executeTaskGraph：
+ *   - result.reason === 'preflight_blocked'（Git readiness 错误详情报出）
+ *   - fail-before-mutation：0 dispatch / 0 review attempts / run 仍 prepared / task status 不变
+ */
+test('E2E M — Non-Git Review-Enabled → preflight_blocked（fail-before-mutation）', async () => {
+  const { root, speccraftDir, runId } = await makeReadyProject(REVIEW_ENABLED_YAML);
+  try {
+    await compileTaskGraphForRun(speccraftDir, runId);
+
+    const graph = await readTaskGraph(speccraftDir, runId);
+    const taskId = graph.tasks[0].id;
+
+    const { readRun } = await import('../src/core/execution/store.js');
+    const runBefore = await readRun(speccraftDir, runId);
+    assert.equal(runBefore.status, 'prepared', 'run must be prepared before execution');
+    const manifestBefore = await readTaskManifest(speccraftDir, runId, taskId);
+    assert.equal(manifestBefore?.status, 'ready', 'compile must seed initial ready state');
+
+    // 模拟 non-Git review-enabled 项目：移除 .git 后直接 execute
+    await rm(path.join(root, '.git'), { recursive: true, force: true });
+
+    const reviewPlan = await readReviewPlanOrNull(speccraftDir, runId);
+    assert.ok(reviewPlan, 'Frozen review plan must exist');
+
+    const workPlan = makeValueWritePlan(taskId, 'v2');
+    registerAdapter(makeFakeExecutor('work', { plan: workPlan }));
+    registerAdapter(makeFakeReviewer('review-pass'));
+
+    const result = await executeTaskGraph({
+      speccraftDir, projectRoot: root, runId,
+      adapter: makeFakeExecutor('work', { plan: workPlan }),
+      runContext: 'test', executionGuard: 'test',
+      reviewPlan: reviewPlan!,
+    });
+
+    // §8：preflight blocked（在 implementStart / 任何 mutation 之前）
+    assert.equal(result.complete, false);
+    assert.equal(result.reason, 'preflight_blocked');
+    assert.equal(result.reviewEnabled, true);
+    assert.ok(
+      result.reviewPreflightError && result.reviewPreflightError.includes('Git'),
+      `must report Git readiness error, got: ${result.reviewPreflightError}`,
+    );
+
+    // §8.1 fail-before-mutation：0 dispatch / 0 workspace / 0 review / 状态不变
+    const runAfter = await readRun(speccraftDir, runId);
+    assert.equal(runAfter.status, 'prepared', 'implementation stage must be unchanged（no implementStart）');
+
+    const manifestAfter = await readTaskManifest(speccraftDir, runId, taskId);
+    assert.equal(manifestAfter?.status, 'ready', 'task status must be unchanged');
+    assert.deepEqual(manifestAfter?.dispatchAttempts ?? [], [], '0 dispatch attempts');
+
+    let reviewDirExists = true;
+    try {
+      await access(path.join(speccraftDir, 'runs', runId, 'tasks', taskId, 'reviews'));
+    } catch {
+      reviewDirExists = false;
+    }
+    assert.equal(reviewDirExists, false, '0 review attempts（no review workspace creation）');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

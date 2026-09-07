@@ -11,6 +11,7 @@
  * capability guard（§26）：model 声明但 adapter 不支持 modelSelection → FAIL。
  */
 
+import { spawnSync } from 'node:child_process';
 import { getAdapter } from '../execution/adapters/registry.js';
 import type { AdapterProbeResult } from '../execution/adapters/types.js';
 import { readReviewPlanOrNull } from './store.js';
@@ -153,4 +154,35 @@ export function formatReviewPreflightBlocked(result: ReviewPreflightResult): str
     }
   }
   return lines.join('\n');
+}
+
+export interface GitReadinessResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * §8/§8.1：Git Readiness —— v0.8 Review 要求 Git repository + resolvable HEAD。
+ *
+ * Review enabled 项目在 implementStart / Task status mutation / Dispatch Attempt /
+ * Workspace creation / Review workspace creation 之前必须通过本检查；
+ * non-Git 项目 → blocked（fail-before-mutation，不产生任何 evidence / 状态变更）。
+ *
+ * 与 snapshot 需求一致：
+ *   git rev-parse --is-inside-work-tree
+ *   git rev-parse HEAD（可解析）
+ */
+export function checkReviewGitReadiness(projectRoot: string): GitReadinessResult {
+  const inWorkTree = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  });
+  if (inWorkTree.status !== 0 || String(inWorkTree.stdout ?? '').trim() !== 'true') {
+    return { ok: false, error: 'review preflight blocked: project is not inside a Git work tree（v0.8 review requires Git repository）' };
+  }
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot, encoding: 'utf8' });
+  if (head.status !== 0 || String(head.stdout ?? '').trim().length !== 40) {
+    return { ok: false, error: 'review preflight blocked: no resolvable HEAD（v0.8 review requires committed baseline）' };
+  }
+  return { ok: true };
 }
