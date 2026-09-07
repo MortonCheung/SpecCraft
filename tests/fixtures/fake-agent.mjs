@@ -4,7 +4,8 @@
  *
  * 通过环境变量控制行为，模拟一个 Provider CLI Agent 的非交互执行：
  *
- *   FAKE_AGENT_MODE = success | fail | timeout | jsonl | stream | work | review-pass | review-major | review-observe
+ *   FAKE_AGENT_MODE = success | fail | timeout | jsonl | stream | work |
+ *                      review-pass | review-major | review-dirty | review-commit | review-observe
  *   FAKE_AGENT_SESSION = 输出的 session id（可选）
  *
  * 行为：
@@ -23,6 +24,10 @@
  *   review-observe → 读取 FAKE_AGENT_OBSERVE_MANIFEST 指定的 manifest，提取 status，
  *                    写入 FAKE_AGENT_OBSERVATION_OUTPUT，
  *                    然后根据 FAKE_AGENT_REVIEW_DECISION 输出 review PASS 或 MAJOR, exit 0
+ *
+ * 所有 review-* 模式都模拟真实 Provider：启动即建立 session —— 在输出
+ * speccraft-review block 前先输出一行带 session_id 的 agent_started JSONL，
+ * 供 runtime adapter.normalize 提取并写入 Review Attempt manifest.session_id。
  *
  * work 模式的 FAKE_AGENT_PLAN（JSON，key = task id，从 stdin prompt 的
  * "- Task ID: <id>" 行解析）：
@@ -68,6 +73,12 @@ function emitJsonl(sessionId, text) {
   ];
   for (const e of events) console.log(JSON.stringify(e));
   console.log(JSON.stringify({ type: 'final_message', text, session_id: sessionId }));
+}
+
+// 真实 Provider 行为：agent 启动即建立 session。review 模式在输出
+// speccraft-review block 前先 emit，保证 adapter.normalize 可提取 session_id。
+function emitStarted(sessionId) {
+  console.log(JSON.stringify({ type: 'agent_started', session_id: sessionId }));
 }
 
 async function main() {
@@ -154,6 +165,7 @@ async function main() {
       return;
     }
     case 'review-pass': {
+      emitStarted(session);
       console.log('```speccraft-review');
       console.log('version: 1');
       console.log('summary: "Review passed."');
@@ -163,6 +175,7 @@ async function main() {
       return;
     }
     case 'review-major': {
+      emitStarted(session);
       console.log('```speccraft-review');
       console.log('version: 1');
       console.log('summary: "Blocking correctness issue."');
@@ -177,6 +190,7 @@ async function main() {
     case 'review-dirty': {
       // Reviewer Mutation E2E（dirty）：真实修改 review worktree 内文件，不 commit，
       // 但仍输出 PASS —— Runtime 必须用 reviewer_mutation ERROR 覆盖 PASS。
+      emitStarted(session);
       const dirtyRel = process.env.FAKE_AGENT_REVIEW_FILE ?? 'src/a/value.txt';
       const dirtyAbs = path.resolve(process.cwd(), dirtyRel);
       await mkdir(path.dirname(dirtyAbs), { recursive: true });
@@ -192,6 +206,7 @@ async function main() {
     case 'review-commit': {
       // Reviewer Mutation E2E（commit）：修改 + git add + git commit 后再输出 PASS。
       // 此时 status --porcelain 干净，但 HEAD 漂移 → Runtime 必须仍 ERROR（HEAD drift guard）。
+      emitStarted(session);
       const commitRel = process.env.FAKE_AGENT_REVIEW_FILE ?? 'src/a/value.txt';
       const commitAbs = path.resolve(process.cwd(), commitRel);
       await mkdir(path.dirname(commitAbs), { recursive: true });
@@ -207,6 +222,7 @@ async function main() {
       return;
     }
     case 'review-observe': {
+      emitStarted(session);
       const fs = await import('node:fs/promises');
       const observeManifest = process.env.FAKE_AGENT_OBSERVE_MANIFEST;
       const observeOutput = process.env.FAKE_AGENT_OBSERVATION_OUTPUT;

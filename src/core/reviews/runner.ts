@@ -7,7 +7,6 @@
  * Review Attempt 每次必须 fresh session（禁止 resume）。
  */
 
-import { spawn } from 'node:child_process';
 import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { TaskDefinition } from '../tasks/types.js';
@@ -15,6 +14,7 @@ import type { ReviewDecision, FrozenReviewGate, ReviewAttemptManifest } from './
 import { parseReviewOutput, deriveReviewDecision } from './protocol.js';
 import { getAdapter } from '../execution/adapters/registry.js';
 import type { CliExecutionAdapter } from '../execution/adapters/types.js';
+import { runDispatchProcess, type DispatchProcessResult } from '../dispatch/runner.js';
 import { checkReviewerMutation } from './snapshot.js';
 
 export interface RunReviewGateOptions {
@@ -44,11 +44,13 @@ export interface RunReviewGateResult {
 /**
  * 运行单个 Review Gate 的 Review Attempt。
  *
- * 1. spawn adapter（fresh session）
- * 2. collect stdout + stderr（raw evidence，先落盘以便保留）
- * 3. parse protocol block
- * 4. reviewer mutation guard（dirty / HEAD drift）→ decision=error + error_code=reviewer_mutation
- * 5. write final manifest ONCE（manifest.decision 必须是整个 attempt 的最终 Runtime decision）
+ * 1. buildInvocation（fresh session，禁止 resume）
+ * 2. runDispatchProcess（进程执行 + timeout → SIGTERM → SIGKILL）
+ * 3. raw evidence 先落盘（stdout/stderr/raw-output）
+ * 4. adapter.normalize（§9：复用 Adapter common denominator 提取 provider sessionId）
+ * 5. parse protocol block + derive decision
+ * 6. reviewer mutation guard（dirty / HEAD drift）→ decision=error + error_code=reviewer_mutation
+ * 7. write final manifest ONCE（含 normalized session_id；manifest.decision 是最终 Runtime decision）
  */
 export async function runReviewGate(options: RunReviewGateOptions): Promise<RunReviewGateResult> {
   const {
@@ -72,25 +74,19 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
   const attemptDir = path.join(evidenceDir, `attempt-${String(attemptNumber).padStart(3, '0')}`);
   await mkdir(attemptDir, { recursive: true });
 
-  const startedAt = new Date().toISOString();
+  const adapter = getAdapter(gate.adapter);
+  if (!adapter || adapter.kind !== 'cli') {
+    return {
+      decision: 'error',
+      attemptNumber,
+      error: adapter ? `adapter ${gate.adapter} is not a CLI adapter` : `adapter not found: ${gate.adapter}`,
+    };
+  }
+  const cliAdapter = adapter as CliExecutionAdapter;
 
-  let stdout = '';
-  let stderr = '';
-  let timedOut = false;
-  let spawnError: string | undefined;
-  let exitCode: number | null = null;
-
+  let proc: DispatchProcessResult | undefined;
+  let buildError: string | undefined;
   try {
-    const adapter = getAdapter(gate.adapter);
-    if (!adapter || adapter.kind !== 'cli') {
-      return {
-        decision: 'error',
-        attemptNumber,
-        error: adapter ? `adapter ${gate.adapter} is not a CLI adapter` : `adapter not found: ${gate.adapter}`,
-      };
-    }
-
-    const cliAdapter = adapter as CliExecutionAdapter;
     const invocation = await cliAdapter.buildInvocation({
       projectRoot: reviewWorktreePath,
       runDir: attemptDir,
@@ -99,56 +95,50 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
       model: gate.resolved.model,
       adapterConfig: gate.resolved,
     });
-
-    const timeoutMs = (gate.resolved.timeout_seconds ?? 900) * 1000;
-
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }>((resolve) => {
-      const proc = spawn(invocation.command, invocation.args, {
-        cwd: invocation.cwd,
-        env: { ...process.env, ...invocation.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      let out = '';
-      let err = '';
-      let to = false;
-
-      // stdin 写入 prompt（与 dispatch runner 一致；不关闭 stdin 会导致读取 stdin 的 CLI 挂起）
-      if (invocation.stdin !== undefined) {
-        proc.stdin?.write(invocation.stdin);
-      }
-      proc.stdin?.end();
-
-      const timer = timeoutMs > 0 ? setTimeout(() => {
-        to = true;
-        proc.kill('SIGTERM');
-      }, timeoutMs) : null;
-
-      proc.stdout?.on('data', (chunk: Buffer) => { out += chunk.toString(); });
-      proc.stderr?.on('data', (chunk: Buffer) => { err += chunk.toString(); });
-      proc.on('error', (err_: Error) => {
-        if (timer) clearTimeout(timer);
-        spawnError = err_.message;
-        resolve({ stdout: out, stderr: err, exitCode: null, timedOut: false });
-      });
-      proc.on('close', (code) => {
-        if (timer) clearTimeout(timer);
-        resolve({ stdout: out, stderr: err, exitCode: code, timedOut: to });
-      });
-    });
-
-    stdout = result.stdout;
-    stderr = result.stderr;
-    timedOut = result.timedOut;
-    exitCode = result.exitCode;
+    proc = await runDispatchProcess({ invocation });
   } catch (err: any) {
-    spawnError = err.message;
+    buildError = err.message;
   }
 
-  const finishedAt = new Date().toISOString();
+  const stdout = proc?.stdout ?? '';
+  const stderr = proc?.stderr ?? '';
+  const startedAt = proc?.startedAt ?? new Date().toISOString();
+  const finishedAt = proc?.finishedAt ?? new Date().toISOString();
+
+  // raw evidence 先落盘以便保留（append-only，不覆盖历史）
   await writeFile(path.join(attemptDir, 'stdout.log'), stdout, 'utf8');
   await writeFile(path.join(attemptDir, 'stderr.log'), stderr, 'utf8');
   await writeFile(path.join(attemptDir, 'raw-output.txt'), stdout, 'utf8');
+
+  // §9：Reviewer Provider Session 必须进入 Evidence —— 真正调用 adapter.normalize，
+  // 从 normalized result 提取 sessionId 写入 manifest.session_id（复用 Dispatch 范式）。
+  // normalize 失败视为 attempt 级 error（Evidence Integrity，不允许静默缺失 session）。
+  let normalizedSessionId: string | undefined;
+  let normalizeError: string | undefined;
+  if (proc) {
+    try {
+      const normalized = await cliAdapter.normalize({
+        projectRoot: reviewWorktreePath,
+        runDir: attemptDir,
+        adapterId: adapter.id,
+        exitCode: proc.exitCode,
+        signal: proc.signal,
+        timedOut: proc.timedOut,
+        ...(proc.spawnError ? { spawnError: proc.spawnError } : {}),
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        startedAt: proc.startedAt,
+        finishedAt: proc.finishedAt,
+        durationMs: proc.durationMs,
+        ...(cliAdapter.capabilities.structuredOutput && proc.stdout
+          ? { rawJsonl: proc.stdout }
+          : {}),
+      });
+      normalizedSessionId = normalized.sessionId;
+    } catch (err: any) {
+      normalizeError = err.message;
+    }
+  }
 
   const parsed = parseReviewOutput(stdout);
   let decision: ReviewDecision;
@@ -157,15 +147,18 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
   let errorMessage: string | undefined;
   let errorCode: string | undefined;
 
-  if (spawnError) {
+  if (buildError) {
     decision = 'error';
-    errorMessage = `spawn_error: ${spawnError}`;
-  } else if (timedOut) {
+    errorMessage = `build_invocation_error: ${buildError}`;
+  } else if (proc?.spawnError) {
+    decision = 'error';
+    errorMessage = `spawn_error: ${proc.spawnError}`;
+  } else if (proc?.timedOut) {
     decision = 'error';
     errorMessage = 'timeout: reviewer timed out';
-  } else if (exitCode !== null && exitCode !== 0) {
+  } else if (proc?.exitCode !== undefined && proc.exitCode !== null && proc.exitCode !== 0) {
     decision = 'error';
-    errorMessage = `non_zero_exit: exit code ${exitCode}`;
+    errorMessage = `non_zero_exit: exit code ${proc.exitCode}`;
   } else if (!parsed) {
     decision = 'error';
     errorMessage = 'protocol_invalid: no valid speccraft-review block found';
@@ -189,6 +182,10 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
     decision = 'error';
     errorCode = 'reviewer_mutation';
     errorMessage = mutationCheck.output;
+  } else if (normalizeError) {
+    // §9：normalize 是 Review Attempt 契约的一部分 —— 失败不得产出缺 session 的 PASS。
+    decision = 'error';
+    errorMessage = `normalize_failed: ${normalizeError}`;
   }
 
   const manifest: ReviewAttemptManifest = {
@@ -209,6 +206,7 @@ export async function runReviewGate(options: RunReviewGateOptions): Promise<RunR
     post_commit: postCommit,
     started_at: startedAt,
     finished_at: finishedAt,
+    ...(normalizedSessionId ? { session_id: normalizedSessionId } : {}),
     finding_count: findingCount,
     blocking_findings: blockingFindings,
     ...(errorMessage ? { error_message: errorMessage } : {}),

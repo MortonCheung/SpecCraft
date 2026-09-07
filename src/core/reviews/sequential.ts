@@ -18,6 +18,7 @@ import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { TaskDefinition } from '../tasks/types.js';
 import type { FrozenReviewGate, ReviewDecision } from './types.js';
+import type { ReviewPackage } from './package.js';
 import { reviewEvidenceDir, reviewWorktreePath } from './paths.js';
 import { createReviewWorktree, removeReviewWorktree } from './snapshot.js';
 import { prepareReviewPackage, buildReviewerPrompt } from './package.js';
@@ -36,6 +37,8 @@ export interface ExecuteSequentialReviewGatesOptions {
   preCommit: string;
   postCommit: string;
   diffPatch: string;
+  /** §11.2：Execution Guard 真实文本（orchestrator 已加载的同一份） */
+  executionGuard: string;
 }
 
 export interface SequentialReviewResult {
@@ -70,6 +73,7 @@ export async function executeSequentialReviewGates(
     preCommit,
     postCommit,
     diffPatch,
+    executionGuard,
   } = options;
 
   const gateResults: SequentialReviewResult['gateResults'] = [];
@@ -91,7 +95,7 @@ export async function executeSequentialReviewGates(
     }
 
     try {
-      // prepare review package（§49）
+      // prepare review package（§49；§11.2：projectRules = 真实 executionGuard 文本）
       const pkgResult = await prepareReviewPackage({
         task,
         gate,
@@ -104,7 +108,7 @@ export async function executeSequentialReviewGates(
         diffPatch,
         reviewWorktreePath: wtPath,
         runDir: path.join(speccraftDir, 'runs', runId),
-        projectRoot,
+        executionGuard,
       });
 
       if (!pkgResult.ok || !pkgResult.package) {
@@ -112,8 +116,10 @@ export async function executeSequentialReviewGates(
         return { decision: 'error', error: pkgResult.error, gateResults };
       }
 
+      const pkg = pkgResult.package;
+
       // build reviewer prompt（§50-§51）
-      const prompt = buildReviewerPrompt(pkgResult.package, gate);
+      const prompt = buildReviewerPrompt(pkg, gate);
 
       // save evidence artifacts
       const attemptDir = path.join(evidenceDir, `attempt-${String(attemptNumber).padStart(3, '0')}`);
@@ -127,6 +133,8 @@ export async function executeSequentialReviewGates(
 **Dependencies**: ${(task.dependsOn ?? []).join(', ') || '(none)'}
 `, 'utf-8');
       await writeFile(path.join(attemptDir, 'diff.patch'), diffPatch, 'utf-8');
+      // §11.1：Review Attempt Evidence 中真实生成 verification.md（确定性，不调用 AI）
+      await writeFile(path.join(attemptDir, 'verification.md'), renderVerificationEvidenceMd(pkg), 'utf-8');
       await writeFile(path.join(attemptDir, 'reviewer-prompt.md'), prompt, 'utf-8');
 
       // run review gate（§62：fresh session，独立 Evidence Namespace；§57：绑定 source evidence）
@@ -169,7 +177,56 @@ export async function executeSequentialReviewGates(
 }
 
 /**
- * Atomic attempt number reservation（§59）。
+ * §11.1：确定性生成 verification.md（不调用 AI）。
+ * 内容 = source verification attempt / commands / each command status /
+ * logs & evidence reference / overall PASS。
+ * 数据来源 = Review Package 中解析出的真实 Verification attempt manifest。
+ */
+function renderVerificationEvidenceMd(pkg: ReviewPackage): string {
+  const lines: string[] = [];
+  lines.push('# Task Verification Evidence');
+  lines.push('');
+  lines.push(`- Task: ${pkg.taskId}`);
+  lines.push(`- Source verification attempt: ${pkg.sourceVerificationAttempt}`);
+  lines.push('');
+
+  const status = pkg.verificationEvidenceStatus;
+  const overallPass = status.length > 0 && status.every((c) => c.passed);
+  lines.push(`- Overall: ${status.length === 0 ? 'UNKNOWN (no manifest)' : overallPass ? 'PASS' : 'FAIL'}`);
+  lines.push('');
+
+  lines.push('## Verification Commands');
+  lines.push('');
+  if (pkg.verificationCommands.length > 0) {
+    pkg.verificationCommands.forEach((c, i) => lines.push(`${i + 1}. \`${c}\``));
+  } else {
+    lines.push('(none declared)');
+  }
+  lines.push('');
+
+  lines.push('## Each Command Status');
+  lines.push('');
+  if (status.length > 0) {
+    status.forEach((c) => {
+      const exit = c.exit_code !== undefined ? `（exit ${c.exit_code}）` : '';
+      lines.push(`- [${c.passed ? 'PASS' : 'FAIL'}] \`${c.command}\`${exit}`);
+    });
+  } else {
+    lines.push('(verification evidence not found)');
+  }
+  lines.push('');
+
+  lines.push('## Logs / Evidence Reference');
+  lines.push('');
+  lines.push(`- manifest.yaml: \`${pkg.verificationEvidenceDir}/manifest.yaml\``);
+  lines.push(`- stdout.log: \`${pkg.verificationEvidenceDir}/stdout.log\``);
+  lines.push(`- stderr.log: \`${pkg.verificationEvidenceDir}/stderr.log\``);
+  lines.push('');
+  lines.push('（Review Gate 只在 Task Verification PASS 后执行；此文件为审计归档，不调用 AI 生成）');
+  return lines.join('\n');
+}
+
+/** Atomic attempt number reservation（§59）。
  * readdir + max + 1，不用 readdir.length（避免缺号问题）。
  */
 async function nextAttemptNumber(evidenceDir: string): Promise<number> {

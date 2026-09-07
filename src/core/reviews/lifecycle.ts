@@ -224,7 +224,6 @@ async function runSingleReviewGate(
       diffPatch,
       reviewWorktreePath: worktreePath,
       runDir,
-      projectRoot,
     });
 
     if (!pkgResult.ok || !pkgResult.package) {

@@ -180,6 +180,7 @@ export async function executeTaskGraph(options: ExecuteOptions): Promise<Execute
         preCommit: preCommit!,
         postCommit: post.commitId,
         diffPatch: delta.patch,
+        executionGuard: options.executionGuard,
       });
 
       if (reviewResult.decision !== 'pass') {

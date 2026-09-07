@@ -628,6 +628,7 @@ async function executeIsolatedTask(
         preCommit: preTreeCommit,
         postCommit: postSnap.commitId,
         diffPatch: delta.patch,
+        executionGuard: options.executionGuard,
       });
 
       if (reviewResult.decision !== 'pass') {
