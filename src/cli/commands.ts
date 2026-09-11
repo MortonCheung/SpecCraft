@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { initProject } from '../core/init.js';
 import { loadProject } from '../core/project.js';
 import { completeStage, approveStage, artifactDependencies } from '../core/advance.js';
@@ -19,6 +19,7 @@ import {
 import { resolveTemplateContent } from '../core/templates/resolver.js';
 import { DEFAULT_STAGE_IDS } from '../core/types.js';
 import type { StageDefinition, StageStatus, State, Workflow } from '../core/types.js';
+import type { ChangeSource } from '../core/changes/types.js';
 
 const STATUS_WIDTH = 22;
 
@@ -2542,4 +2543,214 @@ export async function cmdExecute(
   console.log('implementation = completed，Run = awaiting_verification');
   console.log('下一步：speccraft verify');
   return 0;
+}
+
+/** speccraft changes create --base-run <run-id> (--reason <text> | --file <path>) */
+export async function cmdChangesCreate(
+  options: {
+    baseRun?: string | undefined;
+    reason?: string | undefined;
+    file?: string | undefined;
+    source?: string | undefined;
+    sourceRef?: string | undefined;
+  },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  if (!options.baseRun) {
+    throw new Error('changes create 需要 --base-run <run-id>');
+  }
+  const hasReason = options.reason !== undefined;
+  const hasFile = options.file !== undefined;
+  if (hasReason === hasFile) {
+    throw new Error('changes create 必须且只能提供 --reason <text> 或 --file <path> 之一');
+  }
+
+  const { CHANGE_SOURCES, isChangeSource } = await import('../core/changes/types.js');
+  let source: ChangeSource | undefined;
+  if (options.source !== undefined) {
+    if (!isChangeSource(options.source)) {
+      throw new Error(`--source 非法：${options.source}（可选：${CHANGE_SOURCES.join(' | ')}）`);
+    }
+    source = options.source;
+  }
+
+  const { speccraftDir, workflow } = await loadProject(projectRoot);
+  const reason = hasFile
+    ? await readFile(path.resolve(options.file as string), 'utf8')
+    : (options.reason ?? '');
+
+  const { createChange } = await import('../core/changes/create.js');
+  const manifest = await createChange({
+    speccraftDir,
+    projectRoot,
+    workflow,
+    baseRunId: options.baseRun,
+    reason,
+    ...(source ? { source } : {}),
+    ...(options.sourceRef ? { sourceRef: options.sourceRef } : {}),
+  });
+
+  console.log(`已创建 Change Set：${manifest.id}`);
+  console.log(`  base run: ${manifest.baseRunId}`);
+  console.log(`  source: ${manifest.source}${manifest.sourceRef ? `（${manifest.sourceRef}）` : ''}`);
+  console.log(`  status: ${manifest.status}`);
+  console.log(`  baseline artifacts: ${manifest.artifacts.length}`);
+  console.log(`下一步：speccraft changes show ${manifest.id}`);
+  return 0;
+}
+
+/** speccraft changes list */
+export async function cmdChangesList(projectRoot: string = process.cwd()): Promise<number> {
+  const { speccraftDir } = await loadProject(projectRoot);
+  const { listChangeIds, listAnalysisAttempts, readChangeManifestOrNull, changeDir } = await import(
+    '../core/changes/store.js'
+  );
+
+  const ids = await listChangeIds(speccraftDir);
+  if (ids.length === 0) {
+    console.log('没有 Change Set。');
+    return 0;
+  }
+
+  const header = [
+    'ID'.padEnd(12),
+    'BASE RUN'.padEnd(30),
+    'STATUS'.padEnd(14),
+    'SOURCE'.padEnd(14),
+    'LATEST ANALYSIS'.padEnd(18),
+    'SUCCESSOR RUN'.padEnd(14),
+    'CREATED',
+  ].join('');
+  console.log(header);
+
+  for (const id of ids) {
+    const manifest = await readChangeManifestOrNull(speccraftDir, id);
+    if (!manifest) {
+      console.log(`${id.padEnd(12)}（manifest 缺失，请运行 speccraft validate）`);
+      continue;
+    }
+    const attempts = await listAnalysisAttempts(speccraftDir, id);
+    const latest = attempts.length > 0 ? attempts[attempts.length - 1] : '-';
+    const materialization = await readYamlObjectOrNull(
+      path.join(changeDir(speccraftDir, id), 'materialization.yaml'),
+    );
+    const successor =
+      typeof materialization?.successor_run === 'string' ? materialization.successor_run : '-';
+    console.log(
+      [
+        manifest.id.padEnd(12),
+        manifest.baseRunId.padEnd(30),
+        manifest.status.padEnd(14),
+        manifest.source.padEnd(14),
+        latest.padEnd(18),
+        successor.padEnd(14),
+        manifest.createdAt,
+      ].join(''),
+    );
+  }
+  return 0;
+}
+
+/** speccraft changes show <change-id>（只读，不修改状态） */
+export async function cmdChangesShow(
+  changeId: string,
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { speccraftDir } = await loadProject(projectRoot);
+  const {
+    readChangeManifest,
+    readChangeRequestOrNull,
+    listProposalFiles,
+    listAnalysisAttempts,
+    changeFileExists,
+    changeDir,
+  } = await import('../core/changes/store.js');
+
+  const manifest = await readChangeManifest(speccraftDir, changeId);
+  const present = '（存在）';
+  const absent = '（无）';
+
+  console.log(`Change Set：${manifest.id}`);
+  console.log(`  status: ${manifest.status}`);
+  console.log(`  base run: ${manifest.baseRunId}`);
+  console.log(`  source: ${manifest.source}${manifest.sourceRef ? `（${manifest.sourceRef}）` : ''}`);
+  console.log(`  created at: ${manifest.createdAt}`);
+  console.log(`  git head: ${manifest.gitHead ?? 'null'}`);
+  console.log('');
+
+  console.log('Request:');
+  const request = await readChangeRequestOrNull(speccraftDir, changeId);
+  if (request === null) {
+    console.log(`  ${absent}`);
+  } else {
+    for (const line of request.replace(/\n$/, '').split('\n')) console.log(`  ${line}`);
+  }
+  console.log('');
+
+  console.log('Baseline:');
+  console.log(
+    `  workflow: ${manifest.workflow.name} v${manifest.workflow.version}` +
+      `（digest ${manifest.workflow.digest ?? 'null'}）`,
+  );
+  console.log(`  project digest: ${manifest.projectDigest ?? 'null'}`);
+  if (manifest.artifacts.length === 0) {
+    console.log('  artifacts: （无）');
+  } else {
+    console.log('  artifacts:');
+    for (const a of manifest.artifacts) {
+      console.log(`    ${a.stage} → ${a.artifact}  sha256=${a.sha256}  ${a.path}`);
+    }
+  }
+  console.log(`  base task graph digest: ${manifest.baseTaskGraphDigest ?? 'null'}`);
+  console.log(`  base executor plan digest: ${manifest.baseExecutorPlanDigest ?? 'null'}`);
+  console.log(`  base review plan digest: ${manifest.baseReviewPlanDigest ?? 'null'}`);
+  console.log('');
+
+  const proposalFiles = await listProposalFiles(speccraftDir, changeId);
+  console.log(`Proposal：${proposalFiles.length > 0 ? present : absent}`);
+  for (const f of proposalFiles) console.log(`  ${f}`);
+
+  const hasResolutions = await changeFileExists(speccraftDir, changeId, 'proposal/resolutions.yaml');
+  console.log(`Resolutions：${hasResolutions ? present : absent}`);
+
+  const attempts = await listAnalysisAttempts(speccraftDir, changeId);
+  console.log(`Latest Analysis：${attempts.length > 0 ? attempts[attempts.length - 1] : absent}`);
+
+  console.log(
+    `Approval：${(await changeFileExists(speccraftDir, changeId, 'approval.yaml')) ? present : absent}`,
+  );
+  const materializationPath = path.join(changeDir(speccraftDir, changeId), 'materialization.yaml');
+  const materialization = await readYamlObjectOrNull(materializationPath);
+  const successorRun =
+    typeof materialization?.successor_run === 'string' ? materialization.successor_run : null;
+  console.log(
+    `Materialization：${
+      materialization ? `${present}${successorRun ? ` → ${successorRun}` : ''}` : absent
+    }`,
+  );
+  console.log(
+    `Close：${(await changeFileExists(speccraftDir, changeId, 'close.yaml')) ? present : absent}`,
+  );
+
+  if (successorRun) {
+    const lineage = await pathExists(
+      path.join(speccraftDir, 'runs', successorRun, 'lineage.yaml'),
+    );
+    console.log(`Lineage：${lineage ? `${present} → runs/${successorRun}/lineage.yaml` : absent}`);
+  } else {
+    console.log(`Lineage：${absent}`);
+  }
+  return 0;
+}
+
+/** 读取一个 YAML 对象文件；不存在或非法时返回 null（用于只读展示） */
+async function readYamlObjectOrNull(file: string): Promise<Record<string, unknown> | null> {
+  try {
+    const yaml = (await import('js-yaml')).default;
+    const loaded = yaml.load(await readFile(file, 'utf8'));
+    if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) return null;
+    return loaded as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }

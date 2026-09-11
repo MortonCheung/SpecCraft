@@ -33,6 +33,9 @@ import {
   cmdReviewsPlan,
   cmdReviewsDoctor,
   cmdReviewsShow,
+  cmdChangesCreate,
+  cmdChangesList,
+  cmdChangesShow,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -110,6 +113,10 @@ function usage(): string {
   '  reviews plan                    查看当前 Run 的 frozen Review Plan',
   '  reviews doctor                  probe Review Plan 需要的 adapter（去重）',
   '  reviews show <task-id>          查看某 Task 的 Review 进展与证据绑定',
+    '  changes create --base-run <run-id> --reason <text>|--file <path>',
+    '                                  为某 Run 创建 Change Set（[--source] [--source-ref]）',
+    '  changes list                    列出全部 Change Set',
+    '  changes show <change-id>        查看某个 Change Set 的完整证据',
   ].join('\n');
 }
 
@@ -234,6 +241,25 @@ async function main(): Promise<number> {
           return await cmdReviewsShow(id);
         }
         throw new Error('reviews 需要 list | plan | doctor | show 子命令');
+      }
+      case 'changes': {
+        const sub = args.positionals[0];
+        if (sub === 'create') {
+          return await cmdChangesCreate({
+            baseRun: args.flags['base-run'],
+            reason: args.flags.reason,
+            file: args.flags.file,
+            source: args.flags.source,
+            sourceRef: args.flags['source-ref'],
+          });
+        }
+        if (sub === 'list') return await cmdChangesList();
+        if (sub === 'show') {
+          const id = args.positionals[1];
+          if (!id) throw new Error('changes show 需要 change id：speccraft changes show <change-id>');
+          return await cmdChangesShow(id);
+        }
+        throw new Error('changes 需要 create | list | show 子命令');
       }
       case 'verify':
         return await cmdVerify();
