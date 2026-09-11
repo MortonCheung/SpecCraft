@@ -125,7 +125,8 @@ function assertPrepareGate(workflow: Workflow, state: State): void {
   }
 }
 
-function completedStages(workflow: Workflow, state: State): string[] {
+/** 已完成（completed / approved）阶段列表；Execution Package 的注入依据 */
+export function completedStages(workflow: Workflow, state: State): string[] {
   return workflow.stages
     .filter((s) => {
       const status = state.stages[s.id]?.status;
@@ -134,7 +135,8 @@ function completedStages(workflow: Workflow, state: State): string[] {
     .map((s) => s.id);
 }
 
-async function readSkill(id: string): Promise<string> {
+/** 读取内置 skill 正文（v0.9 §37：Successor Execution Package 复用同一来源） */
+export async function readSkill(id: string): Promise<string> {
   const file = path.join(skillsDir, id, 'SKILL.md');
   return readFile(file, 'utf8');
 }

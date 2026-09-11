@@ -10,6 +10,7 @@
 import type { TaskGraph, TaskManifest } from './types.js';
 import { readTaskGraph, readAllTaskManifests, writeTaskManifest } from './store.js';
 import { transitiveDependents } from './dependency.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface ReopenTaskOptions {
   speccraftDir: string;
@@ -26,6 +27,9 @@ export interface ReopenTaskResult {
 /** 重开一个 Task（及可选 cascade 下游） */
 export async function reopenTask(options: ReopenTaskOptions): Promise<ReopenTaskResult> {
   const { speccraftDir, runId, taskId, cascade } = options;
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, runId);
 
   const graph = await readTaskGraph(speccraftDir, runId);
   if (!graph.tasks.some((t) => t.id === taskId)) {

@@ -21,6 +21,7 @@ import {
   writeRun,
 } from './store.js';
 import type { ExecutionRunManifest } from './types.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface ImplementStartOptions {
   projectRoot: string;
@@ -60,6 +61,9 @@ export async function implementStart(options: ImplementStartOptions): Promise<Im
   if (!runId) {
     throw new Error('没有活跃的 Execution Run。请先运行 speccraft prepare');
   }
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, runId);
   if (state.active_run && options.runId && options.runId !== state.active_run) {
     // 显式指定了非 active 的 run：只要求它存在，不改变 active_run
   }
@@ -107,6 +111,10 @@ export async function implementFinish(
   if (!runId) {
     throw new Error('没有活跃的 Execution Run，但 implementation 为 in_progress（状态不一致）');
   }
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, runId);
+
   const run = await readRun(speccraftDir, runId);
 
   // 报告必须存在且非空

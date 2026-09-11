@@ -31,6 +31,7 @@ import { listTaskVerificationAttempts } from '../tasks/verification/lifecycle.js
 import { readExecutorPlanOrNull } from '../executors/store.js';
 import { implementStart, implementFinish } from '../execution/lifecycle.js';
 import { runDir, readRun } from '../execution/store.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 import { assertParallelGitReady, createWorkspaceWorktree, removeWorkspaceWorktree, readWorkspaceGitState } from '../workspaces/git.js';
 import { auditChangedPaths } from '../workspaces/audit.js';
@@ -117,6 +118,10 @@ interface IsolatedTaskOutcome {
 /** 执行完整 Task Graph（parallel isolated route） */
 export async function executeParallelTaskGraph(options: ExecuteParallelOptions): Promise<ExecuteParallelResult> {
   const { speccraftDir, runId, projectRoot } = options;
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard。
+  // fail-before-mutation：早于 run lock / git preflight / workspace 创建。
+  await assertRunMutable(speccraftDir, runId);
 
   const lock = await acquireRunLock({ speccraftDir, runId, mode: 'parallel' });
 

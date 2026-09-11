@@ -18,6 +18,7 @@ import { readTaskGraph } from './store.js';
 import { readTaskManifest, writeTaskManifest, taskDir } from './store.js';
 import { generateTaskPackage } from './package.js';
 import { runDir } from '../execution/store.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface DispatchTaskOptions {
   speccraftDir: string;
@@ -51,6 +52,9 @@ export interface DispatchTaskResult {
 /** 对单个 Task 执行一次 dispatch */
 export async function dispatchTask(options: DispatchTaskOptions): Promise<DispatchTaskResult> {
   const { speccraftDir, runId, taskId } = options;
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, runId);
 
   const graph = await readTaskGraph(speccraftDir, runId);
   const task = graph.tasks.find((t) => t.id === taskId);

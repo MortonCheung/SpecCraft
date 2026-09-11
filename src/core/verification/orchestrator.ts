@@ -23,6 +23,7 @@ import { runVerificationCommand } from './runner.js';
 import { renderVerificationArtifact } from './report.js';
 import { writeArtifact, readArtifact, createArtifact } from '../artifacts/store.js';
 import type { CommandResult, VerificationAttempt } from './types.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface VerifyOptions {
   projectRoot: string;
@@ -51,6 +52,10 @@ export async function verifyExecution(options: VerifyOptions): Promise<VerifyRes
   if (!runId) {
     throw new Error('没有活跃的 Execution Run，但 implementation 为 completed（状态不一致）');
   }
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, runId);
+
   const run = await readRun(speccraftDir, runId);
   if (run.status !== 'awaiting_verification' && run.status !== 'verification_failed') {
     throw new Error(`Run ${runId} 状态为 ${run.status}，不能 verify`);

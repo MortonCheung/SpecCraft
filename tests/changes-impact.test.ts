@@ -623,7 +623,7 @@ test('v0.9 §15–§22：changes stage / retain / analyze 的 CLI 输出契约',
     assert.match(completeOut, /Analysis Attempt：attempt-002（complete）/);
     assert.match(completeOut, /no effect: no/);
     assert.match(completeOut, /successor run required: yes/);
-    assert.match(completeOut, /speccraft changes approve change-001 --attempt attempt-002/);
+    assert.match(completeOut, /speccraft changes approve change-001 --by <owner>/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

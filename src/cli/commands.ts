@@ -2851,7 +2851,86 @@ export async function cmdChangesAnalyze(
     console.log('该 Change 不产生任何影响（no_effect），不会进入 approval。');
     return 0;
   }
-  console.log(`下一步：speccraft changes approve ${changeId} --attempt ${result.attempt}`);
+  console.log(`下一步：speccraft changes approve ${changeId} --by <owner>`);
+  return 0;
+}
+
+/** speccraft changes approve <change-id> --by <owner>（Owner 批准并绑定 Analysis digest） */
+export async function cmdChangesApprove(
+  changeId: string,
+  options: { by?: string | undefined },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  if (!options.by) {
+    throw new Error('changes approve 需要 --by <owner>');
+  }
+  const { speccraftDir } = await loadProject(projectRoot);
+
+  const { approveChange, approvalPath } = await import('../core/changes/approval.js');
+  const result = await approveChange({
+    speccraftDir,
+    changeId,
+    approvedBy: options.by,
+  });
+
+  console.log(`Change 已批准：${result.changeId}`);
+  console.log(`  attempt: ${result.attempt}`);
+  console.log(`  approved by: ${result.approval.approved_by}`);
+  console.log(`  approved at: ${result.approval.approved_at}`);
+  console.log(`  approval: ${approvalPath(speccraftDir, changeId)}`);
+  console.log(`下一步：speccraft changes replan ${changeId}`);
+  return 0;
+}
+
+/** speccraft changes reject <change-id> --reason <text>|--file <path> */
+export async function cmdChangesReject(
+  changeId: string,
+  options: { reason?: string | undefined; file?: string | undefined },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const hasReason = options.reason !== undefined;
+  const hasFile = options.file !== undefined;
+  if (hasReason === hasFile) {
+    throw new Error('changes reject 必须且只能提供 --reason <text> 或 --file <path> 之一');
+  }
+  const { speccraftDir } = await loadProject(projectRoot);
+  const reason = hasFile
+    ? await readFile(path.resolve(options.file as string), 'utf8')
+    : (options.reason ?? '');
+
+  const { rejectChange, rejectionPath } = await import('../core/changes/store.js');
+  const manifest = await rejectChange({ speccraftDir, changeId, reason });
+
+  console.log(`Change 已拒绝：${manifest.id}`);
+  console.log(`  status: ${manifest.status}`);
+  console.log(`  base run: ${manifest.baseRunId}（恢复可执行）`);
+  console.log(`  rejection: ${rejectionPath(speccraftDir, changeId)}`);
+  return 0;
+}
+
+/**
+ * speccraft changes replan <change-id>（§35–§42）。
+ *
+ * 只创建 Successor Run 并编译 frozen state；不 dispatch、不 execute（§42）。
+ */
+export async function cmdChangesReplan(
+  changeId: string,
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { speccraftDir, workflow } = await loadProject(projectRoot);
+
+  const { replanChange } = await import('../core/changes/replan.js');
+  const result = await replanChange({ speccraftDir, projectRoot, changeId, workflow });
+
+  console.log(`Successor Run：${result.successorRun}`);
+  console.log(`  change: ${result.changeId}（materialized）`);
+  console.log(`  approved analysis attempt: ${result.attempt}`);
+  console.log(`  predecessor: ${result.predecessorRun}（superseded）`);
+  console.log(`  task graph digest: ${result.taskGraphDigest ?? 'null'}`);
+  console.log(`  executor plan digest: ${result.executorPlanDigest ?? 'null'}`);
+  console.log(`  review plan digest: ${result.reviewPlanDigest ?? 'null'}`);
+  console.log(`  lineage: .speccraft/runs/${result.successorRun}/lineage.yaml`);
+  console.log('replan 不自动施工；请显式运行 speccraft execute 或 speccraft dispatch。');
   return 0;
 }
 

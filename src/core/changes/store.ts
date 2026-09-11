@@ -29,6 +29,8 @@ export const CHANGES_DIR = 'changes';
 export const CHANGE_MANIFEST_FILE = 'manifest.yaml';
 /** Change 请求正文文件名 */
 export const CHANGE_REQUEST_FILE = 'request.md';
+/** Change 拒绝证据文件名（v0.9 §14） */
+export const REJECTION_FILE = 'rejection.yaml';
 /** baseline 快照目录（相对 change 目录） */
 export const BASELINE_DIR = 'baseline';
 /** proposal 工作目录（相对 change 目录） */
@@ -293,6 +295,102 @@ export async function findActiveChangeForRun(
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Reject（v0.9 §14）
+// ---------------------------------------------------------------------------
+
+/** `.speccraft/changes/<change-id>/rejection.yaml`（v0.9 §14） */
+export interface ChangeRejection {
+  change_id: string;
+  reason: string;
+  rejected_at: string;
+}
+
+export function rejectionPath(speccraftDir: string, changeId: string): string {
+  return path.join(changeDir(speccraftDir, changeId), REJECTION_FILE);
+}
+
+export function stringifyChangeRejection(rejection: ChangeRejection): string {
+  return yaml.dump(
+    {
+      change_id: rejection.change_id,
+      reason: rejection.reason,
+      rejected_at: rejection.rejected_at,
+    },
+    { indent: 2, lineWidth: -1, noRefs: true },
+  );
+}
+
+export function parseChangeRejection(source: string): ChangeRejection {
+  const loaded = yaml.load(source);
+  if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) {
+    throw new Error('rejection.yaml 顶层必须是对象');
+  }
+  const obj = loaded as Record<string, unknown>;
+  const changeId = readStr(obj.change_id ?? obj.changeId);
+  if (!changeId) throw new Error('rejection.yaml 缺少 change_id');
+  return {
+    change_id: changeId,
+    reason: readStr(obj.reason) ?? '',
+    rejected_at: readStr(obj.rejected_at ?? obj.rejectedAt) ?? '',
+  };
+}
+
+export async function readChangeRejectionOrNull(
+  speccraftDir: string,
+  changeId: string,
+): Promise<ChangeRejection | null> {
+  const file = rejectionPath(speccraftDir, changeId);
+  if (!(await pathExists(file))) return null;
+  return parseChangeRejection(await readFile(file, 'utf8'));
+}
+
+export interface RejectChangeOptions {
+  speccraftDir: string;
+  changeId: string;
+  /** 拒绝原因（`--reason` 或 `--file`）；必须非空 */
+  reason: string;
+  now?: Date;
+}
+
+/**
+ * Owner 拒绝一个 Change（§14）。
+ *
+ * 只允许 draft / analyzed → rejected；之后 base Run 恢复可执行（计划没有被改变）。
+ * 拒绝原因写入 rejection.yaml，Change Evidence（baseline / proposal / analysis）永久保留。
+ */
+export async function rejectChange(options: RejectChangeOptions): Promise<ChangeSetManifest> {
+  const reason = options.reason;
+  if (!reason.trim()) {
+    throw new Error('changes reject 需要 --reason <text> 或 --file <path>');
+  }
+
+  const manifest = await readChangeManifest(options.speccraftDir, options.changeId);
+  if (manifest.status !== 'draft' && manifest.status !== 'analyzed') {
+    throw new ChangeError(
+      manifest.status === 'rejected' ? 'change_rejected' : 'invalid_change_transition',
+      `Change ${manifest.id} 当前状态为 ${manifest.status}，只有 draft / analyzed 可以 reject。`,
+    );
+  }
+
+  await writeChangeRejection(options.speccraftDir, manifest.id, {
+    change_id: manifest.id,
+    reason,
+    rejected_at: (options.now ?? new Date()).toISOString(),
+  });
+  await updateChangeStatus(options.speccraftDir, manifest, 'rejected');
+  return manifest;
+}
+
+async function writeChangeRejection(
+  speccraftDir: string,
+  changeId: string,
+  rejection: ChangeRejection,
+): Promise<void> {
+  await mkdir(changeDir(speccraftDir, changeId), { recursive: true });
+  await writeFile(rejectionPath(speccraftDir, changeId), stringifyChangeRejection(rejection), 'utf8');
 }
 
 /** 写入 request.md（创建时一次性写入，其后不再改写） */

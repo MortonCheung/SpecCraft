@@ -19,6 +19,7 @@ import type { DispatchOnceResult } from './orchestrator.js';
 import { readLatestDispatchAttempt } from './store.js';
 import { runDir, readRun } from '../execution/store.js';
 import { implementStart, implementFinish } from '../execution/lifecycle.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface DispatchExecutionOptions {
   projectRoot: string;
@@ -48,6 +49,10 @@ export async function dispatchExecution(
   options: DispatchExecutionOptions,
 ): Promise<DispatchExecutionResult> {
   const { speccraftDir, adapter } = options;
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard。
+  // fail-before-mutation：早于 implementStart / dispatch attempt / provider CLI 调用。
+  await assertRunMutable(speccraftDir, options.run.id);
 
   // prepared → 显式开始施工（复用既有 implementStart lifecycle）
   if (options.run.status === 'prepared') {

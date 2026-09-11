@@ -49,7 +49,14 @@ import {
   readRetainedStages,
   hasStagedConfig,
 } from './proposal.js';
-import { bundleDigest, sha256Bytes, sha256File, stableJson, stableDigest } from './digest.js';
+import {
+  bundleDigest,
+  executorPlanDigest,
+  reviewPlanDigest,
+  sha256Bytes,
+  sha256File,
+  taskGraphDigest,
+} from './digest.js';
 import type { BundleEntry } from './digest.js';
 import {
   FROZEN_EVIDENCE_STILL_VALID,
@@ -315,20 +322,14 @@ export async function analyzeChange(options: AnalyzeChangeOptions): Promise<Anal
   }
 
   // --------------------------------------------------------------- digests
-  const baseTaskGraphDigest = baseGraph ? stableDigest(canonicalTaskGraph(baseGraph)) : null;
-  const candidateTaskGraphDigest = effectiveGraph
-    ? stableDigest(canonicalTaskGraph(effectiveGraph))
-    : null;
-  const baseExecutorPlanDigest = baseExecutorPlan
-    ? stableDigest(canonicalExecutorPlan(baseExecutorPlan))
-    : null;
+  const baseTaskGraphDigest = baseGraph ? taskGraphDigest(baseGraph) : null;
+  const candidateTaskGraphDigest = effectiveGraph ? taskGraphDigest(effectiveGraph) : null;
+  const baseExecutorPlanDigest = baseExecutorPlan ? executorPlanDigest(baseExecutorPlan) : null;
   const candidateExecutorPlanDigest = candidateExecutorPlan
-    ? stableDigest(canonicalExecutorPlan(candidateExecutorPlan))
+    ? executorPlanDigest(candidateExecutorPlan)
     : null;
-  const baseReviewPlanDigest = baseReviewPlan ? stableDigest(canonicalReviewPlan(baseReviewPlan)) : null;
-  const candidateReviewPlanDigest = candidateReviewPlan
-    ? stableDigest(canonicalReviewPlan(candidateReviewPlan))
-    : null;
+  const baseReviewPlanDigest = baseReviewPlan ? reviewPlanDigest(baseReviewPlan) : null;
+  const candidateReviewPlanDigest = candidateReviewPlan ? reviewPlanDigest(candidateReviewPlan) : null;
 
   const taskGraphChanged = candidateTaskGraphDigest !== baseTaskGraphDigest;
   const executorPlanChanged = candidateExecutorPlanDigest !== baseExecutorPlanDigest;
@@ -616,75 +617,6 @@ function frozenEntry(
     changed,
     state: changed ? FROZEN_EVIDENCE_SUPERSEDED : FROZEN_EVIDENCE_STILL_VALID,
   };
-}
-
-/**
- * 冻结语义 digest 的规范形式。
- *
- * 排除 run_id / created_at（candidate 尚无 Successor Run，时间天然不同），
- * 与 digest.ts 的 canonical* 保持一致，用 stableJson 复用同一算法。
- */
-function canonicalTaskGraph(graph: TaskGraph): unknown {
-  return stableJson({
-    version: graph.version,
-    source: graph.source,
-    tasks: graph.tasks.map((t) => ({
-      id: t.id,
-      title: t.title,
-      summary: t.summary,
-      ...(t.executor ? { executor: t.executor } : {}),
-      depends_on: t.dependsOn,
-      scope: { paths: t.scope.paths },
-      verification: {
-        commands: t.verification.commands,
-        timeout_seconds: t.verification.timeoutSeconds,
-      },
-    })),
-  });
-}
-
-function canonicalExecutorPlan(plan: {
-  version: 1;
-  defaultExecutor: string;
-  assignments: Array<{
-    taskId: string;
-    executor: string;
-    source: string;
-    adapter: string;
-    resolved: unknown;
-    maxConcurrency?: number;
-  }>;
-}): string {
-  return stableJson({
-    version: plan.version,
-    default_executor: plan.defaultExecutor,
-    assignments: plan.assignments.map((a) => ({
-      task_id: a.taskId,
-      executor: a.executor,
-      source: a.source,
-      adapter: a.adapter,
-      resolved: a.resolved,
-      ...(a.maxConcurrency !== undefined ? { max_concurrency: a.maxConcurrency } : {}),
-    })),
-  });
-}
-
-function canonicalReviewPlan(plan: {
-  version: 1;
-  enabled: boolean;
-  gates: Array<{ id: string; kind: string; reviewer: string; adapter: string; resolved: unknown }>;
-}): string {
-  return stableJson({
-    version: plan.version,
-    enabled: plan.enabled,
-    gates: plan.gates.map((g) => ({
-      id: g.id,
-      kind: g.kind,
-      reviewer: g.reviewer,
-      adapter: g.adapter,
-      resolved: g.resolved,
-    })),
-  });
 }
 
 async function claimAttemptDir(

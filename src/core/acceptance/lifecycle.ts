@@ -25,6 +25,7 @@ import {
 } from './store.js';
 import { stringifyAcceptanceRecord, renderAcceptanceBody } from './report.js';
 import type { AcceptanceFrontmatter } from './types.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface AcceptInput {
   by?: string;
@@ -86,6 +87,9 @@ export async function accept(
   run: ExecutionRunManifest,
   input: AcceptInput,
 ): Promise<{ attempt: number }> {
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, run.id);
+
   const gate = await canAccept(speccraftDir, state, run);
   if (!gate.ok) throw new Error(`accept 被拒绝：${gate.reason}`);
 
@@ -134,6 +138,9 @@ export async function reject(
   run: ExecutionRunManifest,
   input: RejectInput,
 ): Promise<{ attempt: number }> {
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, run.id);
+
   const gate = canReject(state, run);
   if (!gate.ok) throw new Error(`reject 被拒绝：${gate.reason}`);
 

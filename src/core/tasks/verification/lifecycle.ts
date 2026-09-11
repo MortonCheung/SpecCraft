@@ -14,6 +14,7 @@ import { runTaskVerificationCommands } from './runner.js';
 import { taskVerificationAttemptDir } from './types.js';
 import type { TaskVerificationAttemptManifest } from './types.js';
 import type { TaskVerification } from '../types.js';
+import { assertRunMutable } from '../../changes/guards.js';
 
 export interface VerifyTaskOptions {
   speccraftDir: string;
@@ -38,6 +39,9 @@ export interface VerifyTaskResult {
 /** 对单个 Task 执行一次 Task Verification */
 export async function verifyTask(options: VerifyTaskOptions): Promise<VerifyTaskResult> {
   const { speccraftDir, runId, taskId } = options;
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard（fail-before-mutation）
+  await assertRunMutable(speccraftDir, runId);
 
   const manifest = await readTaskManifest(speccraftDir, runId, taskId);
   if (!manifest) throw new Error(`Task manifest 不存在：${taskId}`);

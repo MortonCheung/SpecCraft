@@ -53,10 +53,26 @@ export async function compileContext(
   workflow: Workflow,
   targetStageId: string,
 ): Promise<ExecutionContext> {
+  return compileContextFrom(workflow, targetStageId, (artifactId) =>
+    path.join(speccraftDir, 'artifacts', artifactFileName(artifactId)),
+  );
+}
+
+/**
+ * 编译 target 阶段的传递上游 Artifact 为 Execution Context，artifact 来源由调用方决定。
+ *
+ * v0.9 §23：Successor Run 必须基于 approved resolved snapshot 编译 Execution Package，
+ * 不能读取当前 canonical artifacts；因此 compile / render 逻辑只保留一份。
+ */
+export async function compileContextFrom(
+  workflow: Workflow,
+  targetStageId: string,
+  resolveArtifactFile: (artifactId: string) => string,
+): Promise<ExecutionContext> {
   const artifactIds = collectUpstreamArtifacts(workflow, targetStageId);
   const sections: ContextSection[] = [];
   for (const id of artifactIds) {
-    const filePath = path.join(speccraftDir, 'artifacts', artifactFileName(id));
+    const filePath = resolveArtifactFile(id);
     if (!(await pathExists(filePath))) continue;
     const source = await readFile(filePath, 'utf8');
     const { frontmatter, body } = parseArtifact(source);

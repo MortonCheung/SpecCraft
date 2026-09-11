@@ -40,6 +40,9 @@ import {
   cmdChangesStageConfig,
   cmdChangesRetain,
   cmdChangesAnalyze,
+  cmdChangesApprove,
+  cmdChangesReject,
+  cmdChangesReplan,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -128,6 +131,11 @@ function usage(): string {
     '  changes retain <change-id> --artifact <stage-id>',
     '                                  显式 retain 一个受影响的 artifact',
     '  changes analyze <change-id>     执行一次 Impact Analysis（新建 Attempt）',
+    '  changes approve <change-id> --by <owner>',
+    '                                  Owner 批准 Change 并绑定 Analysis digest',
+    '  changes reject <change-id> --reason <text>|--file <path>',
+    '                                  拒绝 Change（仅 draft / analyzed），解除 Run freeze',
+    '  changes replan <change-id>      生成 Successor Run（§35–§42，不自动施工）',
   ].join('\n');
 }
 
@@ -307,8 +315,31 @@ async function main(): Promise<number> {
           }
           return await cmdChangesAnalyze(id);
         }
+        if (sub === 'approve') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error('changes approve 需要 change id：speccraft changes approve <change-id> --by <owner>');
+          }
+          return await cmdChangesApprove(id, { by: args.flags.by });
+        }
+        if (sub === 'reject') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error(
+              'changes reject 需要 change id：speccraft changes reject <change-id> --reason <text>|--file <path>',
+            );
+          }
+          return await cmdChangesReject(id, { reason: args.flags.reason, file: args.flags.file });
+        }
+        if (sub === 'replan') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error('changes replan 需要 change id：speccraft changes replan <change-id>');
+          }
+          return await cmdChangesReplan(id);
+        }
         throw new Error(
-          'changes 需要 create | list | show | stage | stage-config | retain | analyze 子命令',
+          'changes 需要 create | list | show | stage | stage-config | retain | analyze | approve | reject | replan 子命令',
         );
       }
       case 'verify':

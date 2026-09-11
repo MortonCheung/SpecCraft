@@ -23,6 +23,7 @@ import { implementStart, implementFinish } from '../execution/lifecycle.js';
 import { runDir, readRun } from '../execution/store.js';
 import type { HookConfig } from '../hooks/types.js';
 import type { ReviewPlan } from '../reviews/types.js';
+import { assertRunMutable } from '../changes/guards.js';
 
 export interface ExecuteOptions {
   speccraftDir: string;
@@ -64,6 +65,10 @@ export interface ExecuteResult {
 export async function executeTaskGraph(options: ExecuteOptions): Promise<ExecuteResult> {
   const { speccraftDir, runId } = options;
   const reviewEnabled = options.reviewPlan?.enabled === true && (options.reviewPlan?.gates.length ?? 0) > 0;
+
+  // v0.9 §13 / §41：Active Change Freeze 与 Superseded Run Guard。
+  // fail-before-mutation：早于 review preflight / implementStart / task mutation / dispatch attempt。
+  await assertRunMutable(speccraftDir, runId);
 
   // §8/§8.1：Review Preflight 必须包含 Git Readiness —— fail-before-mutation。
   // review enabled 的 v0.8 要求 Git repo + resolvable HEAD；non-Git 项目必须在此失败，
