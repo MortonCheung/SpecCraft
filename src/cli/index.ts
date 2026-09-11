@@ -43,6 +43,7 @@ import {
   cmdChangesApprove,
   cmdChangesReject,
   cmdChangesReplan,
+  cmdChangesClose,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -136,6 +137,7 @@ function usage(): string {
     '  changes reject <change-id> --reason <text>|--file <path>',
     '                                  拒绝 Change（仅 draft / analyzed），解除 Run freeze',
     '  changes replan <change-id>      生成 Successor Run（§35–§42，不自动施工）',
+    '  changes close <change-id>        将 approved version 提升为 canonical（§46–§50）',
   ].join('\n');
 }
 
@@ -338,8 +340,15 @@ async function main(): Promise<number> {
           }
           return await cmdChangesReplan(id);
         }
+        if (sub === 'close') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error('changes close 需要 change id：speccraft changes close <change-id>');
+          }
+          return await cmdChangesClose(id);
+        }
         throw new Error(
-          'changes 需要 create | list | show | stage | stage-config | retain | analyze | approve | reject | replan 子命令',
+          'changes 需要 create | list | show | stage | stage-config | retain | analyze | approve | reject | replan | close 子命令',
         );
       }
       case 'verify':

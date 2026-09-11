@@ -4,6 +4,9 @@
  * Handoff Guard：active run 存在 + verification completed + 最新 verification PASS
  * + owner-acceptance completed + 最新 acceptance accepted + run.status accepted。
  *
+ * v0.9 §51 Change Gate：Successor Run 若来自 Change，Change 必须 closed，
+ * 否则正式 handoff 会带走尚未更新的 canonical truth。
+ *
  * 幂等：同一已 accepted 且无状态变化的 Run 重复 handoff 返回现有包、exit 0。
  * terminal Run 不阻塞未来 prepare（历史 Run 仍可查询、不删除）。
  */
@@ -15,6 +18,8 @@ import { setStageStatus, writeState } from '../state/store.js';
 import { writeRun } from '../execution/store.js';
 import type { ExecutionRunManifest } from '../execution/types.js';
 import { readLatestAcceptance } from '../acceptance/store.js';
+import { readRunLineageOrNull } from '../changes/lineage.js';
+import { readChangeManifestOrNull } from '../changes/store.js';
 import { compileHandoffPackage } from './package.js';
 
 export interface HandoffResult {
@@ -42,6 +47,38 @@ export async function canHandoff(
   const latest = await readLatestAcceptance(speccraftDir, run.id);
   if (!latest || latest.frontmatter.decision !== 'accepted') {
     return { ok: false, reason: '最新 acceptance 不是 accepted' };
+  }
+  return changeGate(speccraftDir, run.id);
+}
+
+/**
+ * v0.9 §51：Successor Run 必须有 closed Change 才能 handoff。
+ *
+ * 非 Change 产生的 Run（无 `lineage.yaml`）不受影响，保持 v0.8 行为。
+ */
+async function changeGate(
+  speccraftDir: string,
+  runId: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const lineage = await readRunLineageOrNull(speccraftDir, runId);
+  if (!lineage) return { ok: true };
+
+  const change = await readChangeManifestOrNull(speccraftDir, lineage.change_id);
+  if (!change) {
+    return {
+      ok: false,
+      reason:
+        `accepted successor has unclosed change：${lineage.change_id}（Change evidence 缺失）\n` +
+        `run \`speccraft changes close ${lineage.change_id}\` first`,
+    };
+  }
+  if (change.status !== 'closed') {
+    return {
+      ok: false,
+      reason:
+        `accepted successor has unclosed change：${lineage.change_id}（status ${change.status}）\n` +
+        `run \`speccraft changes close ${lineage.change_id}\` first`,
+    };
   }
   return { ok: true };
 }

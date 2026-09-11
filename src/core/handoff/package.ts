@@ -17,12 +17,14 @@ import {
   compileAcceptanceHistory,
   compileExecutorHistory,
   compileReviewHistory,
+  compileChangeHistory,
   compileGitSnapshot,
   renderHandoffDoc,
   renderDecisionsDoc,
   renderManifestYaml,
   makeSourceLists,
 } from './compiler.js';
+import { sha256Bytes } from '../changes/digest.js';
 import type { HandoffCompileInput } from './types.js';
 
 export interface CompileHandoffPackageOptions {
@@ -56,6 +58,7 @@ export async function compileHandoffPackage(
   const acceptanceHistory = await compileAcceptanceHistory(speccraftDir, run.id);
   const executorHistory = await compileExecutorHistory(speccraftDir, run.id);
   const reviewHistory = await compileReviewHistory(speccraftDir, run.id);
+  const changeHistory = await compileChangeHistory(speccraftDir, run.id);
   const git = await compileGitSnapshot(projectRoot);
   const sourceLists = await makeSourceLists(speccraftDir, run.id);
 
@@ -72,6 +75,7 @@ export async function compileHandoffPackage(
     acceptanceHistory,
     executorHistory,
     reviewHistory,
+    changeHistory,
     missingArtifacts,
     git,
     verification: {
@@ -86,8 +90,6 @@ export async function compileHandoffPackage(
     sourceLists: sourceLists,
   };
 
-  const manifestYaml = renderManifestYaml(input);
-
   const files: Record<string, string> = {
     'HANDOFF.md': renderHandoffDoc(input),
     'context.md': contextMarkdown,
@@ -96,12 +98,16 @@ export async function compileHandoffPackage(
     'verification-history.md': `# Verification History\n\n${verificationHistory.join('\n')}\n`,
     'acceptance-history.md': `# Acceptance History\n\n${acceptanceHistory.join('\n')}\n`,
     'executor-history.md': `# Executor History\n\n${executorHistory.join('\n')}\n`,
-    'manifest.yaml': manifestYaml,
   };
 
   // Review History（v0.8 §17：有 Review evidence 时确定性生成，不调 AI）
   if (reviewHistory.length > 0) {
     files['review-history.md'] = reviewHistory.join('\n') + '\n';
+  }
+
+  // Change History（v0.9 §52：Successor Run 有 lineage 时确定性生成，不调 AI）
+  if (changeHistory !== null) {
+    files['change-history.md'] = changeHistory;
   }
 
   // Task History（v0.5：有 Task Graph 时确定性生成，不调 AI）
@@ -115,6 +121,13 @@ export async function compileHandoffPackage(
   if (workspaceHistory) {
     files['workspace-history.md'] = workspaceHistory;
   }
+
+  // v0.9 §52：manifest.yaml 纳入 Package 内文件 hash（不含自身，避免自引用）
+  const fileHashes: Record<string, string> = {};
+  for (const [name, content] of Object.entries(files)) {
+    fileHashes[name] = sha256Bytes(content);
+  }
+  files['manifest.yaml'] = renderManifestYaml(input, fileHashes);
 
   const dir = handoffDir(speccraftDir, handoffId);
   await mkdir(dir, { recursive: true });

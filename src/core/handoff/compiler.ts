@@ -127,6 +127,180 @@ export async function compileReviewHistory(speccraftDir: string, runId: string):
   return lines;
 }
 
+/**
+ * v0.9 §52：Successor Handoff 的 `change-history.md`。
+ *
+ * 数据源全部来自 Change Evidence（lineage / manifest / analysis attempt /
+ * approval / materialization / close），确定性渲染，不调用 AI。
+ * 非 Change 产生的 Run（无 lineage.yaml）返回 null。
+ */
+export async function compileChangeHistory(
+  speccraftDir: string,
+  runId: string,
+): Promise<string | null> {
+  const { readRunLineageOrNull, readChangeMaterializationOrNull } = await import(
+    '../changes/lineage.js'
+  );
+  const lineage = await readRunLineageOrNull(speccraftDir, runId);
+  if (!lineage) return null;
+
+  const changeId = lineage.change_id;
+  const { readChangeManifestOrNull } = await import('../changes/store.js');
+  const { readApprovalOrNull } = await import('../changes/approval.js');
+  const { readChangeCloseOrNull } = await import('../changes/close.js');
+  const { analysisAttemptDir, readAnalysisAttemptOrNull, IMPACT_YAML_FILE } = await import(
+    '../changes/analyze.js'
+  );
+
+  const manifest = await readChangeManifestOrNull(speccraftDir, changeId);
+  const approval = await readApprovalOrNull(speccraftDir, changeId);
+  const materialization = await readChangeMaterializationOrNull(speccraftDir, changeId);
+  const close = await readChangeCloseOrNull(speccraftDir, changeId);
+  const attempt = approval
+    ? await readAnalysisAttemptOrNull(speccraftDir, changeId, approval.analysis_attempt)
+    : null;
+  const impact = attempt
+    ? await readImpactYamlOrNull(
+        path.join(analysisAttemptDir(speccraftDir, changeId, attempt.attempt), IMPACT_YAML_FILE),
+      )
+    : null;
+
+  const replaced = (attempt?.resolved ?? [])
+    .filter((r) => r.resolution === 'replace')
+    .map((r) => `${r.artifact}（stage ${r.stage}）`);
+  const retained = (attempt?.resolved ?? [])
+    .filter((r) => r.resolution === 'retain')
+    .map((r) => `${r.artifact}（stage ${r.stage}）`);
+
+  const lines: string[] = [
+    '# Change History',
+    '',
+    `- Change ID: ${changeId}`,
+    `- Predecessor Run: ${lineage.predecessor_run}`,
+    `- Successor Run: ${runId}`,
+    `- Reason: ${indentValue(manifest?.reason ?? '（缺失）')}`,
+    `- Source: ${manifest?.source ?? '（缺失）'}${
+      manifest?.sourceRef ? `（${manifest.sourceRef}）` : ''
+    }`,
+    `- Approved By: ${approval?.approved_by ?? '（缺失）'}`,
+    `- Approved Analysis Attempt: ${lineage.approved_analysis_attempt}`,
+    `- Materialized At: ${materialization?.created_at ?? '（缺失）'}`,
+    `- Closed At: ${close?.closed_at ?? '（未 close）'}`,
+    '',
+    '## Changed Artifacts',
+    '',
+  ];
+  pushMarkdownList(lines, replaced);
+  lines.push('', '## Retained Artifacts', '');
+  pushMarkdownList(lines, retained);
+
+  const diff = impact?.task_graph?.diff;
+  lines.push('', '## Task Diff', '');
+  if (impact) {
+    lines.push(`- added: ${inlineList(diff?.added)}`);
+    lines.push(`- removed: ${inlineList(diff?.removed)}`);
+    lines.push(`- modified: ${inlineList(diff?.modified)}`);
+    lines.push(`- unchanged: ${diff?.unchanged?.length ?? 0}`);
+  } else {
+    lines.push('- （无 impact evidence）');
+  }
+
+  lines.push('', '## Executor Diff', '');
+  const assignmentChanges = (impact?.executor_plan?.assignments ?? []).filter(
+    (a) => a.change !== 'unchanged',
+  );
+  if (!impact) {
+    lines.push('- （无 impact evidence）');
+  } else if (assignmentChanges.length === 0) {
+    lines.push('- （无变更）');
+  } else {
+    for (const a of assignmentChanges) {
+      lines.push(
+        `- ${a.task_id ?? '?'}: ${a.change ?? '?'}（${a.base_executor ?? '（无）'} → ${
+          a.candidate_executor ?? '（无）'
+        }）`,
+      );
+    }
+  }
+
+  lines.push('', '## Review Diff', '');
+  const reviewPlan = impact?.review_plan;
+  if (!reviewPlan) {
+    lines.push('- （无 impact evidence）');
+  } else {
+    lines.push(`- enabled: ${String(reviewPlan.base_enabled)} → ${String(reviewPlan.candidate_enabled)}`);
+    lines.push(`- changed: ${reviewPlan.changed === true}`);
+    const gateChanges = (reviewPlan.gates ?? []).filter((g) => g.change !== 'unchanged');
+    if (gateChanges.length === 0) {
+      lines.push('- gates: （无变更）');
+    } else {
+      for (const g of gateChanges) {
+        lines.push(
+          `- ${g.id ?? '?'}: ${g.change ?? '?'}（${g.base_kind ?? '（无）'} → ${
+            g.candidate_kind ?? '（无）'
+          }）`,
+        );
+      }
+    }
+  }
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/** 缩进多行值（Reason 允许换行，保持确定性） */
+function indentValue(value: string): string {
+  return value.replace(/\n/g, '\n  ');
+}
+
+function pushMarkdownList(lines: string[], items: readonly string[]): void {
+  if (items.length === 0) {
+    lines.push('- （无）');
+    return;
+  }
+  for (const item of items) lines.push(`- ${item}`);
+}
+
+function inlineList(items: readonly string[] | undefined): string {
+  return items && items.length > 0 ? items.join(', ') : '（无）';
+}
+
+interface ImpactDoc {
+  task_graph?: {
+    diff?: { added?: string[]; removed?: string[]; modified?: string[]; unchanged?: string[] };
+  };
+  executor_plan?: {
+    assignments?: Array<{
+      task_id?: string;
+      change?: string;
+      base_executor?: string | null;
+      candidate_executor?: string | null;
+    }>;
+  };
+  review_plan?: {
+    base_enabled?: boolean | null;
+    candidate_enabled?: boolean | null;
+    changed?: boolean;
+    gates?: Array<{
+      id?: string;
+      change?: string;
+      base_kind?: string | null;
+      candidate_kind?: string | null;
+    }>;
+  };
+}
+
+/** 读取 Attempt 的 impact.yaml（缺失或非法 → null，不阻塞 handoff） */
+async function readImpactYamlOrNull(file: string): Promise<ImpactDoc | null> {
+  try {
+    const loaded = yaml.load(await readFile(file, 'utf8'));
+    if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) return null;
+    return loaded as ImpactDoc;
+  } catch {
+    return null;
+  }
+}
+
 /** 统计 attempt 目录 findings.yaml 中 minor severity 数量（§17；error/无 findings 时文件不存在 → 0） */
 async function countMinorFindings(attemptDir: string): Promise<number> {
   const findingsPath = path.join(attemptDir, 'findings.yaml');
@@ -378,8 +552,11 @@ export function renderDecisionsDoc(decisions: DecisionSource[]): string {
   return `# Decisions\n\n${parts.join('\n\n---\n\n')}\n`;
 }
 
-/** 渲染 manifest.yaml（机器读取入口） */
-export function renderManifestYaml(input: HandoffCompileInput): string {
+/** 渲染 manifest.yaml（机器读取入口；fileHashes 为 Package 内文件 hash，不含自身） */
+export function renderManifestYaml(
+  input: HandoffCompileInput,
+  fileHashes: Record<string, string> = {},
+): string {
   const manifest: HandoffManifest = {
     handoff_id: input.handoffId,
     run_id: input.runId,
@@ -407,8 +584,10 @@ export function renderManifestYaml(input: HandoffCompileInput): string {
       'verification-history.md',
       'acceptance-history.md',
       ...(input.reviewHistory.length > 0 ? ['review-history.md'] : []),
+      ...(input.changeHistory !== null ? ['change-history.md'] : []),
       'manifest.yaml',
     ],
+    file_hashes: fileHashes,
   };
   // sources.execution_reports / verification_attempts / acceptance_records / review_attempts 由 lifecycle 填充
   return yaml.dump(manifest, { indent: 2, lineWidth: -1, noRefs: true });

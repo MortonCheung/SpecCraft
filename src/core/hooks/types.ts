@@ -25,6 +25,11 @@ export const HOOK_EVENTS = [
   'after_reject',
   'before_handoff',
   'after_handoff',
+  // v0.9 §59：Change 生命周期事件
+  'before_change_replan',
+  'after_change_replan',
+  'before_change_close',
+  'after_change_close',
 ] as const;
 
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -71,6 +76,12 @@ export interface HookEnvironment {
   SPECCRAFT_REVIEWER_PROFILE?: string;
   /** v0.8：review final decision（after_review 时注入） */
   SPECCRAFT_REVIEW_DECISION?: string;
+  /** v0.9：Change Set id（change_replan / change_close 时注入） */
+  SPECCRAFT_CHANGE_ID?: string;
+  /** v0.9：Change 关联的 base / predecessor Run */
+  SPECCRAFT_CHANGE_BASE_RUN?: string;
+  /** v0.9：Change 关联的 Successor Run（replan 成功后 / close 时注入） */
+  SPECCRAFT_CHANGE_SUCCESSOR_RUN?: string;
 }
 
 /** 单个 hook 的执行结果 */

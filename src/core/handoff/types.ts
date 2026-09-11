@@ -42,6 +42,12 @@ export interface HandoffManifest {
   };
 
   files: string[];
+
+  /**
+   * v0.9 §52：Handoff Package 内文件的 SHA-256（键为文件名）。
+   * 不含 `manifest.yaml` 自身（避免自引用）。
+   */
+  file_hashes: Record<string, string>;
 }
 
 /** 单个 Decision 的来源信息 */
@@ -73,6 +79,9 @@ export interface HandoffCompileInput {
   executorHistory: string[];
   /** review history 摘要行（v0.8 §17）；无 review evidence 时为 [] */
   reviewHistory: string[];
+
+  /** v0.9 §52：Change History 正文；非 Change 产生的 Run 为 null */
+  changeHistory: string | null;
 
   /** 缺失的 artifact id 列表（manifest 必须显式记录） */
   missingArtifacts: string[];

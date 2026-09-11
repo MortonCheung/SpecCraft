@@ -185,6 +185,9 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
     }
   }
 
+  // v0.9 §56：Change 生命周期摘要（无 Change evidence 时不打印，保持 legacy 输出）
+  await printChangeStatus(speccraftDir);
+
   console.log('Stages:');
   for (const stage of workflow.stages) {
     const status = state.stages[stage.id]?.status ?? 'pending';
@@ -192,6 +195,89 @@ export async function cmdStatus(projectRoot: string = process.cwd()): Promise<vo
   }
 }
 
+/**
+ * v0.9 §56：`speccraft status` 的 Change 摘要。
+ *
+ * 只读；无 `.speccraft/changes/` 时不输出任何内容（legacy 兼容）。
+ */
+async function printChangeStatus(speccraftDir: string): Promise<void> {
+  try {
+    const { listChangeIds, readChangeManifestOrNull } = await import('../core/changes/store.js');
+    const { readChangeMaterializationOrNull, readRunSupersessionOrNull } = await import(
+      '../core/changes/lineage.js'
+    );
+    const { isActiveChangeStatus } = await import('../core/changes/types.js');
+    const { listRuns } = await import('../core/execution/store.js');
+
+    const ids = await listChangeIds(speccraftDir);
+    if (ids.length === 0) return;
+
+    const manifests: NonNullable<Awaited<ReturnType<typeof readChangeManifestOrNull>>>[] = [];
+    for (const id of ids) {
+      const manifest = await readChangeManifestOrNull(speccraftDir, id);
+      if (manifest) manifests.push(manifest);
+    }
+    if (manifests.length === 0) return;
+
+    const active = manifests.filter((m) => isActiveChangeStatus(m.status));
+    const pendingImpact = manifests.filter((m) => m.status === 'draft' || m.status === 'analyzed');
+    const awaitingReplan = manifests.filter((m) => m.status === 'approved');
+    const materialized = manifests.filter((m) => m.status === 'materialized');
+
+    console.log('Changes:');
+    console.log(`  Active Change: ${active.length}`);
+    for (const m of active) console.log(`    ${m.id}（${m.status}）`);
+    console.log(`  Pending Impact: ${pendingImpact.length}`);
+    for (const m of pendingImpact) {
+      console.log(`    ${m.id}（${m.status}）→ speccraft changes stage | retain，然后 analyze`);
+    }
+    console.log(`  Approved Change Awaiting Replan: ${awaitingReplan.length}`);
+    for (const m of awaitingReplan) {
+      console.log(`    ${m.id} → speccraft changes replan ${m.id}`);
+    }
+
+    const unclosedAccepted: string[] = [];
+    const successors: Array<{ changeId: string; runId: string; status: string | null }> = [];
+    console.log(`  Materialized Change: ${materialized.length}`);
+    for (const m of materialized) {
+      const materialization = await readChangeMaterializationOrNull(speccraftDir, m.id);
+      if (!materialization) continue;
+      const status = await readRunStatusOrNull(speccraftDir, materialization.successor_run);
+      console.log(`    ${m.id} → successor ${materialization.successor_run}（${status ?? 'missing'}）`);
+      successors.push({ changeId: m.id, runId: materialization.successor_run, status });
+      if (status === 'accepted') unclosedAccepted.push(m.id);
+    }
+    console.log(`  Unclosed Accepted Change: ${unclosedAccepted.length}`);
+    for (const id of unclosedAccepted) {
+      console.log(`    ${id} → speccraft changes close ${id}`);
+    }
+
+    // Superseded Run：不得再作为 execution target（§41）
+    const superseded: Array<{ runId: string; changeId: string; successor: string }> = [];
+    for (const runId of await listRuns(speccraftDir)) {
+      const supersession = await readRunSupersessionOrNull(speccraftDir, runId);
+      if (supersession) {
+        superseded.push({
+          runId,
+          changeId: supersession.change_id,
+          successor: supersession.successor_run,
+        });
+      }
+    }
+    console.log(`  Superseded Run: ${superseded.length}`);
+    for (const s of superseded) {
+      console.log(`    ${s.runId} → superseded by ${s.successor}（change ${s.changeId}）`);
+    }
+
+    console.log(`  Successor Run: ${successors.length}`);
+    for (const s of successors) {
+      console.log(`    ${s.runId}（${s.status ?? 'missing'}，change ${s.changeId}）`);
+    }
+    console.log('');
+  } catch {
+    // 读取 Change evidence 失败不阻塞 status
+  }
+}
 /** speccraft next */
 export async function cmdNext(projectRoot: string = process.cwd()): Promise<void> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
@@ -225,6 +311,10 @@ export async function cmdNext(projectRoot: string = process.cwd()): Promise<void
 
 /** Execution 生命周期引导；返回 null 表示不在 execution 阶段 */
 async function nextExecutionGuidance(projectRoot: string, speccraftDir: string, state: State): Promise<string | null> {
+  // v0.9 §57：Change 生命周期优先（superseded Run 不得再被建议执行）
+  const changeGuidance = await changeLifecycleGuidance(speccraftDir, state);
+  if (changeGuidance) return changeGuidance;
+
   const impl = state.stages['implementation']?.status ?? 'pending';
   const verif = state.stages['verification']?.status ?? 'pending';
   const acceptance = state.stages['owner-acceptance']?.status ?? 'pending';
@@ -326,6 +416,100 @@ async function nextExecutionGuidance(projectRoot: string, speccraftDir: string, 
     ].join('\n');
   }
   return '下一步：speccraft implement start';
+}
+
+/**
+ * v0.9 §57：Change 生命周期引导；返回 null 表示按普通 execution 生命周期继续。
+ *
+ * 硬约束：
+ *   - superseded Run 不得再被建议执行（§41）；
+ *   - materialized + successor 未 accepted → 继续 successor execution（不拦截）；
+ *   - successor accepted 但 Change 未 closed → 必须先 close（§51）；
+ *   - closed → 交给既有 handoff 引导。
+ */
+async function changeLifecycleGuidance(
+  speccraftDir: string,
+  state: State,
+): Promise<string | null> {
+  const { findActiveChangeForRun, readChangeManifestOrNull } = await import(
+    '../core/changes/store.js'
+  );
+  const { readChangeMaterializationOrNull, readRunLineageOrNull, readRunSupersessionOrNull } =
+    await import('../core/changes/lineage.js');
+
+  const activeRun = state.active_run;
+  if (!activeRun) return null;
+
+  // §41：superseded Run 不能继续执行
+  const supersession = await readRunSupersessionOrNull(speccraftDir, activeRun);
+  if (supersession) {
+    return [
+      `Run ${activeRun} 已被 Change ${supersession.change_id} supersede，不能继续执行。`,
+      `Successor Run：${supersession.successor_run}`,
+      '',
+      '请在 Successor Run 上继续 execution（speccraft status 查看详情）。',
+    ].join('\n');
+  }
+
+  // 当前 active Run 是 Successor（有 lineage）
+  const lineage = await readRunLineageOrNull(speccraftDir, activeRun);
+  if (lineage) {
+    const change = await readChangeManifestOrNull(speccraftDir, lineage.change_id);
+    if (!change || change.status === 'closed') return null;
+    if (change.status === 'materialized') {
+      const status = await readRunStatusOrNull(speccraftDir, activeRun);
+      if (status === 'accepted') {
+        return [
+          `Successor Run ${activeRun} 已 Owner Accepted，但 Change ${change.id} 尚未 closed。`,
+          '',
+          'Next:',
+          `  speccraft changes close ${change.id}`,
+          '',
+          '（canonical artifacts 尚未提升为 approved 版本，handoff 会被阻止）',
+        ].join('\n');
+      }
+      // 仍在执行 / 待 acceptance：继续 successor execution
+      return null;
+    }
+  }
+
+  // 当前 active Run 被 active Change 冻结（draft / analyzed / approved / materialized）
+  const activeChange = await findActiveChangeForRun(speccraftDir, activeRun);
+  if (!activeChange) return null;
+
+  if (activeChange.status === 'draft' || activeChange.status === 'analyzed') {
+    return [
+      `Change ${activeChange.id}（${activeChange.status}）正在等待 Impact Resolution / Owner Approval。`,
+      '',
+      'Next:',
+      `  speccraft changes stage ${activeChange.id} --artifact <stage-id> --file <path>`,
+      `  speccraft changes retain ${activeChange.id} --artifact <stage-id>`,
+      `  speccraft changes analyze ${activeChange.id}`,
+      '',
+      'or',
+      '',
+      `  speccraft changes approve ${activeChange.id} --by <owner>`,
+      `  speccraft changes reject ${activeChange.id} --reason "..."`,
+    ].join('\n');
+  }
+
+  if (activeChange.status === 'approved') {
+    return [
+      `Change ${activeChange.id} 已批准，等待 deterministic replanning。`,
+      '',
+      'Next:',
+      `  speccraft changes replan ${activeChange.id}`,
+    ].join('\n');
+  }
+
+  // materialized 但 active Run 仍是 predecessor（successor 在别处）
+  const materialization = await readChangeMaterializationOrNull(speccraftDir, activeChange.id);
+  return [
+    `Change ${activeChange.id} 已 materialized；predecessor ${activeRun} 不可继续执行。`,
+    `Successor Run：${materialization?.successor_run ?? '（缺失，请运行 speccraft validate）'}`,
+    '',
+    '请在 Successor Run 上继续 execution（speccraft status 查看详情）。',
+  ].join('\n');
 }
 
 /** Task Graph 级下一步引导；无 task graph 返回 null */
@@ -959,13 +1143,16 @@ export async function cmdDispatch(
   return 0;
 }
 
-/** speccraft validate（状态一致性 + execution 一致性） */
+/** speccraft validate（状态一致性 + execution 一致性 + Change 一致性） */
 export async function cmdValidate(projectRoot: string = process.cwd()): Promise<number> {
   const { workflow, state, speccraftDir } = await loadProject(projectRoot);
   const violations = validateState(workflow, state);
   violations.push(...(await validateExecutionConsistency(speccraftDir, state, workflow)));
   // v0.7 §55：16 Workflow Stages unchanged（不变量）
   violations.push(...checkWorkflowStagesInvariant(workflow));
+  // v0.9 §58：Change evidence 一致性（任何 tampering → FAIL）
+  const { checkChangeConsistency } = await import('../core/changes/consistency.js');
+  violations.push(...(await checkChangeConsistency(speccraftDir, state)));
   console.log(`Workflow：${workflow.name} v${workflow.version}（${workflow.stages.length} 阶段）`);
   console.log(`当前阶段：${state.current_stage}`);
   if (violations.length === 0) {
@@ -2912,15 +3099,52 @@ export async function cmdChangesReject(
  * speccraft changes replan <change-id>（§35–§42）。
  *
  * 只创建 Successor Run 并编译 frozen state；不 dispatch、不 execute（§42）。
+ * v0.9 §59：接入 before_change_replan / after_change_replan。
  */
 export async function cmdChangesReplan(
   changeId: string,
   projectRoot: string = process.cwd(),
 ): Promise<number> {
   const { speccraftDir, workflow } = await loadProject(projectRoot);
+  const { loadProjectConfig } = await import('../core/project.js');
+  const config = await loadProjectConfig(speccraftDir);
+  const { readChangeManifest } = await import('../core/changes/store.js');
+  const manifest = await readChangeManifest(speccraftDir, changeId);
+
+  const hookCtx = {
+    projectRoot,
+    speccraftDir,
+    env: {
+      SPECCRAFT_EVENT: 'before_change_replan',
+      SPECCRAFT_PROJECT_ROOT: projectRoot,
+      SPECCRAFT_DIR: speccraftDir,
+      SPECCRAFT_STAGE: 'implementation',
+      SPECCRAFT_CHANGE_ID: changeId,
+      SPECCRAFT_CHANGE_BASE_RUN: manifest.baseRunId,
+    },
+  };
+  const { runBeforeHooks, runAfterHooks } = await import('../core/hooks/lifecycle.js');
+  const before = await runBeforeHooks(hookCtx, config.hooks, 'before_change_replan');
+  if (before.blocked) {
+    console.error('错误：before_change_replan hook 失败，已中止 replan。');
+    return 1;
+  }
 
   const { replanChange } = await import('../core/changes/replan.js');
   const result = await replanChange({ speccraftDir, projectRoot, changeId, workflow });
+
+  await runAfterHooks(
+    {
+      ...hookCtx,
+      env: {
+        ...hookCtx.env,
+        SPECCRAFT_EVENT: 'after_change_replan',
+        SPECCRAFT_CHANGE_SUCCESSOR_RUN: result.successorRun,
+      },
+    },
+    config.hooks,
+    'after_change_replan',
+  );
 
   console.log(`Successor Run：${result.successorRun}`);
   console.log(`  change: ${result.changeId}（materialized）`);
@@ -2931,6 +3155,78 @@ export async function cmdChangesReplan(
   console.log(`  review plan digest: ${result.reviewPlanDigest ?? 'null'}`);
   console.log(`  lineage: .speccraft/runs/${result.successorRun}/lineage.yaml`);
   console.log('replan 不自动施工；请显式运行 speccraft execute 或 speccraft dispatch。');
+  return 0;
+}
+
+/**
+ * speccraft changes close <change-id>（§46–§50）。
+ *
+ * 只有 Successor Run Owner Acceptance = accepted 之后才允许把 approved resolved
+ * snapshot 提升为 canonical artifacts；canonical_drift 时拒绝覆盖任何未知修改。
+ * v0.9 §59：接入 before_change_close / after_change_close。
+ */
+export async function cmdChangesClose(
+  changeId: string,
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { speccraftDir } = await loadProject(projectRoot);
+  const { loadProjectConfig } = await import('../core/project.js');
+  const config = await loadProjectConfig(speccraftDir);
+  const { readChangeManifest } = await import('../core/changes/store.js');
+  const manifest = await readChangeManifest(speccraftDir, changeId);
+
+  const hookCtx = {
+    projectRoot,
+    speccraftDir,
+    env: {
+      SPECCRAFT_EVENT: 'before_change_close',
+      SPECCRAFT_PROJECT_ROOT: projectRoot,
+      SPECCRAFT_DIR: speccraftDir,
+      SPECCRAFT_STAGE: 'handoff',
+      SPECCRAFT_CHANGE_ID: changeId,
+      SPECCRAFT_CHANGE_BASE_RUN: manifest.baseRunId,
+    },
+  };
+  const { runBeforeHooks, runAfterHooks } = await import('../core/hooks/lifecycle.js');
+  const before = await runBeforeHooks(hookCtx, config.hooks, 'before_change_close');
+  if (before.blocked) {
+    console.error('错误：before_change_close hook 失败，已中止 close。');
+    return 1;
+  }
+
+  const { closeChange, closePath } = await import('../core/changes/close.js');
+  const result = await closeChange({ speccraftDir, changeId });
+
+  await runAfterHooks(
+    {
+      ...hookCtx,
+      env: {
+        ...hookCtx.env,
+        SPECCRAFT_EVENT: 'after_change_close',
+        SPECCRAFT_CHANGE_SUCCESSOR_RUN: result.successorRun,
+      },
+    },
+    config.hooks,
+    'after_change_close',
+  );
+
+  if (result.reused) {
+    console.log(`Change 已 closed，复用现有 close 记录：${result.changeId}`);
+  } else {
+    console.log(`Change 已 close：${result.changeId}`);
+  }
+  console.log(`  successor run: ${result.successorRun}（owner accepted）`);
+  console.log(
+    `  promoted files: ${
+      result.promotedFiles.length > 0 ? result.promotedFiles.join(', ') : '（无）'
+    }`,
+  );
+  if (result.skippedFiles.length > 0) {
+    console.log(`  skipped（已等于 approved target）: ${result.skippedFiles.join(', ')}`);
+  }
+  console.log(`  close: ${closePath(speccraftDir, changeId)}`);
+  console.log('canonical artifacts 已提升为 approved 版本。');
+  console.log('下一步：speccraft handoff');
   return 0;
 }
 
@@ -2948,4 +3244,12 @@ async function readYamlObjectOrNull(file: string): Promise<Record<string, unknow
   } catch {
     return null;
   }
+}
+
+/** 读取 Run manifest 的 status；缺失或非法时返回 null（只读展示用） */
+async function readRunStatusOrNull(speccraftDir: string, runId: string): Promise<string | null> {
+  const manifest = await readYamlObjectOrNull(
+    path.join(speccraftDir, 'runs', runId, 'manifest.yaml'),
+  );
+  return typeof manifest?.status === 'string' ? manifest.status : null;
 }
