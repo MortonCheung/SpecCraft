@@ -36,6 +36,10 @@ import {
   cmdChangesCreate,
   cmdChangesList,
   cmdChangesShow,
+  cmdChangesStage,
+  cmdChangesStageConfig,
+  cmdChangesRetain,
+  cmdChangesAnalyze,
 } from './commands.js';
 
 interface ParsedArgs {
@@ -117,6 +121,13 @@ function usage(): string {
     '                                  为某 Run 创建 Change Set（[--source] [--source-ref]）',
     '  changes list                    列出全部 Change Set',
     '  changes show <change-id>        查看某个 Change Set 的完整证据',
+    '  changes stage <change-id> --artifact <stage-id> --file <replacement.md>',
+    '                                  stage 一个 artifact replacement（隔离目录）',
+    '  changes stage-config <change-id> --file ./project.yaml',
+    '                                  stage 一个 project.yaml replacement',
+    '  changes retain <change-id> --artifact <stage-id>',
+    '                                  显式 retain 一个受影响的 artifact',
+    '  changes analyze <change-id>     执行一次 Impact Analysis（新建 Attempt）',
   ].join('\n');
 }
 
@@ -259,7 +270,46 @@ async function main(): Promise<number> {
           if (!id) throw new Error('changes show 需要 change id：speccraft changes show <change-id>');
           return await cmdChangesShow(id);
         }
-        throw new Error('changes 需要 create | list | show 子命令');
+        if (sub === 'stage') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error(
+              'changes stage 需要 change id：speccraft changes stage <change-id> --artifact <stage-id> --file <path>',
+            );
+          }
+          return await cmdChangesStage(id, {
+            artifact: args.flags.artifact,
+            file: args.flags.file,
+          });
+        }
+        if (sub === 'stage-config') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error(
+              'changes stage-config 需要 change id：speccraft changes stage-config <change-id> --file <path>',
+            );
+          }
+          return await cmdChangesStageConfig(id, { file: args.flags.file });
+        }
+        if (sub === 'retain') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error(
+              'changes retain 需要 change id：speccraft changes retain <change-id> --artifact <stage-id>',
+            );
+          }
+          return await cmdChangesRetain(id, { artifact: args.flags.artifact });
+        }
+        if (sub === 'analyze') {
+          const id = args.positionals[1];
+          if (!id) {
+            throw new Error('changes analyze 需要 change id：speccraft changes analyze <change-id>');
+          }
+          return await cmdChangesAnalyze(id);
+        }
+        throw new Error(
+          'changes 需要 create | list | show | stage | stage-config | retain | analyze 子命令',
+        );
       }
       case 'verify':
         return await cmdVerify();

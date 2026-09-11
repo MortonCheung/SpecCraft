@@ -91,18 +91,18 @@ export function initialTaskStates(graph: TaskGraph): Record<string, TaskManifest
 }
 
 /**
- * 编译 Task Graph：从 Execution Manual body 提取、解析、校验并落盘，
- * 为每个 task 创建初始 manifest。
+ * 纯编译：Execution Manual body → TaskGraph（不落盘、不检查 Run evidence）。
+ *
+ * v0.9 §67：`parse / normalize / validate / compile` 抽成可复用纯函数，
+ * 由 normal task compile、candidate change analysis、successor replan 共用。
+ * 禁止复制第二套 Task Graph compiler。
  */
-export async function compileTaskGraph(options: {
-  speccraftDir: string;
-  runId: string;
+export function compileTaskGraphFromManual(options: {
   manualBody: string;
+  runId: string;
   source: string;
   now?: Date;
-  /** 提供时构建并持久化 Executor Plan（ADR 0008 §4）；未提供（legacy 测试/工具）跳过 plan */
-  projectConfig?: ProjectConfig;
-}): Promise<CompileResult> {
+}): TaskGraph {
   const block = extractTaskGraphBlock(options.manualBody);
   if (block === null) {
     throw new Error(
@@ -110,11 +110,6 @@ export async function compileTaskGraph(options: {
         'legacy 项目可继续使用 speccraft prepare / dispatch；\n' +
         '如需 Task Graph 请在 Execution Manual 补充「Execution Task Graph」段。',
     );
-  }
-
-  // ADR 0008 §20 / v0.8 §20：Run 已有任何真实执行 evidence 后禁止 rebuild Task Graph / Executor Plan
-  if (await hasExecutionEvidence(options.speccraftDir, options.runId)) {
-    throw new Error('cannot rebuild task/executor plan after execution evidence exists');
   }
 
   // block 内是完整的 version + tasks YAML
@@ -141,6 +136,33 @@ export async function compileTaskGraph(options: {
     validateScopePaths(t.scope.paths);
   }
   validateGraphConstraints(graph);
+  return graph;
+}
+
+/**
+ * 编译 Task Graph：从 Execution Manual body 提取、解析、校验并落盘，
+ * 为每个 task 创建初始 manifest。
+ */
+export async function compileTaskGraph(options: {
+  speccraftDir: string;
+  runId: string;
+  manualBody: string;
+  source: string;
+  now?: Date;
+  /** 提供时构建并持久化 Executor Plan（ADR 0008 §4）；未提供（legacy 测试/工具）跳过 plan */
+  projectConfig?: ProjectConfig;
+}): Promise<CompileResult> {
+  // ADR 0008 §20 / v0.8 §20：Run 已有任何真实执行 evidence 后禁止 rebuild Task Graph / Executor Plan
+  if (await hasExecutionEvidence(options.speccraftDir, options.runId)) {
+    throw new Error('cannot rebuild task/executor plan after execution evidence exists');
+  }
+
+  const graph = compileTaskGraphFromManual({
+    manualBody: options.manualBody,
+    runId: options.runId,
+    source: options.source,
+    ...(options.now ? { now: options.now } : {}),
+  });
 
   // v0.8 §20：frozen Review Plan 重建必须发生在任何 plan 写入之前（review evidence 存在 → 禁止）
   const reviewConfig = options.projectConfig?.review;

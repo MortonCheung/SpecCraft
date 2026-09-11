@@ -2743,6 +2743,122 @@ export async function cmdChangesShow(
   return 0;
 }
 
+/** speccraft changes stage <change-id> --artifact <stage-id> --file <replacement.md> */
+export async function cmdChangesStage(
+  changeId: string,
+  options: { artifact?: string | undefined; file?: string | undefined },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  if (!options.artifact) {
+    throw new Error('changes stage 需要 --artifact <stage-id>');
+  }
+  if (!options.file) {
+    throw new Error('changes stage 需要 --file <replacement.md>');
+  }
+  const { speccraftDir, workflow } = await loadProject(projectRoot);
+  const source = await readFile(path.resolve(options.file), 'utf8');
+
+  const { stageProposalArtifact, proposalArtifactPath } = await import(
+    '../core/changes/proposal.js'
+  );
+  await stageProposalArtifact({
+    speccraftDir,
+    changeId,
+    stageId: options.artifact,
+    source,
+    workflow,
+  });
+
+  console.log(`已 stage artifact replacement：${changeId}`);
+  console.log(`  stage: ${options.artifact}`);
+  console.log(`  file: ${proposalArtifactPath(speccraftDir, changeId, options.artifact)}`);
+  console.log(`下一步：speccraft changes analyze ${changeId}`);
+  return 0;
+}
+
+/** speccraft changes stage-config <change-id> --file ./project.yaml */
+export async function cmdChangesStageConfig(
+  changeId: string,
+  options: { file?: string | undefined },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  if (!options.file) {
+    throw new Error('changes stage-config 需要 --file ./project.yaml');
+  }
+  const { speccraftDir } = await loadProject(projectRoot);
+  const source = await readFile(path.resolve(options.file), 'utf8');
+
+  const { stageProposalConfig, proposalConfigPath } = await import('../core/changes/proposal.js');
+  await stageProposalConfig({ speccraftDir, changeId, source });
+
+  console.log(`已 stage project.yaml replacement：${changeId}`);
+  console.log(`  file: ${proposalConfigPath(speccraftDir, changeId)}`);
+  console.log(`下一步：speccraft changes analyze ${changeId}`);
+  return 0;
+}
+
+/** speccraft changes retain <change-id> --artifact <stage-id> */
+export async function cmdChangesRetain(
+  changeId: string,
+  options: { artifact?: string | undefined },
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  if (!options.artifact) {
+    throw new Error('changes retain 需要 --artifact <stage-id>');
+  }
+  const { speccraftDir, workflow } = await loadProject(projectRoot);
+
+  const { retainArtifact } = await import('../core/changes/proposal.js');
+  await retainArtifact({ speccraftDir, changeId, stageId: options.artifact, workflow });
+
+  console.log(`已 retain artifact：${changeId}`);
+  console.log(`  stage: ${options.artifact}（现有内容仍然成立）`);
+  console.log(`下一步：speccraft changes analyze ${changeId}`);
+  return 0;
+}
+
+/** speccraft changes analyze <change-id>（每次创建新的不可变 Analysis Attempt） */
+export async function cmdChangesAnalyze(
+  changeId: string,
+  projectRoot: string = process.cwd(),
+): Promise<number> {
+  const { speccraftDir, workflow } = await loadProject(projectRoot);
+
+  const { analyzeChange, analysisAttemptDir } = await import('../core/changes/analyze.js');
+  const result = await analyzeChange({ speccraftDir, changeId, workflow });
+  const dir = analysisAttemptDir(speccraftDir, changeId, result.attempt);
+
+  console.log(`Analysis Attempt：${result.attempt}（${result.result}）`);
+  console.log(`  change: ${result.changeId}`);
+  console.log(`  base run: ${result.impact.base_run}`);
+  console.log(`  changed artifacts: ${formatStageList(result.impact.changed_artifacts)}`);
+  console.log(`  affected artifacts: ${formatStageList(result.impact.affected_artifacts)}`);
+  console.log(`  impact report: ${path.join(dir, 'impact.md')}`);
+
+  if (result.unresolved.length > 0) {
+    console.log('');
+    console.log('Unresolved affected artifacts:');
+    for (const stage of result.unresolved) console.log(`- ${stage}`);
+    console.log('');
+    console.log('请为以上 stage 提供 replacement 或显式 retain，然后重新运行：');
+    console.log(`  speccraft changes analyze ${changeId}`);
+    return 1;
+  }
+
+  console.log(`  no effect: ${result.noEffect ? 'yes' : 'no'}`);
+  console.log(`  successor run required: ${result.impact.required_successor_run ? 'yes' : 'no'}`);
+  if (result.noEffect) {
+    console.log('该 Change 不产生任何影响（no_effect），不会进入 approval。');
+    return 0;
+  }
+  console.log(`下一步：speccraft changes approve ${changeId} --attempt ${result.attempt}`);
+  return 0;
+}
+
+function formatStageList(stages: readonly string[]): string {
+  return stages.length > 0 ? stages.join(', ') : '（无）';
+}
+
 /** 读取一个 YAML 对象文件；不存在或非法时返回 null（用于只读展示） */
 async function readYamlObjectOrNull(file: string): Promise<Record<string, unknown> | null> {
   try {
