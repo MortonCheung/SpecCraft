@@ -14,7 +14,7 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 
 ## 当前开发阶段
 
-**v0.8 — Independent Review Gates**
+**v0.9 — Controlled Change Management & Deterministic Replanning**
 
 版本演进：
 
@@ -26,8 +26,9 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
 - v0.6 Safe Parallel Execution + Worktree Isolation
 - v0.7 Heterogeneous Multi-Executor Routing
 - v0.8 Independent Review Gates
+- v0.9 Controlled Change Management & Deterministic Replanning
 
-已实现（v0.1 → v0.8 累计）：
+已实现（v0.1 → v0.9 累计）：
 
 - 声明式 16 阶段 Workflow、`.speccraft` 文件优先工作现场（无数据库）；
 - Context Compiler、Execution Run、Verification / Owner Acceptance / Handoff Runtime；
@@ -54,6 +55,16 @@ SpecCraft 不把主要产品思考下放给 Coding Agent。Coding Agent 应尽�
   guarantee、structured review protocol、review feedback rework loop、
   sequential/parallel review gate execution、Review ≠ Verification ≠ Owner
   Acceptance（`reviews list/plan/doctor/show`）；
+- **Controlled Change Management & Deterministic Replanning（v0.9）**：计划变更
+  （需求 / 设计 / Execution Manual / Task intent·依赖·范围 / Verification 契约 /
+  Executor 重分配 / Review 策略）必须走 Change Set
+  （`draft → analyzed → approved → materialized → closed`，旁路 `rejected`）→
+  确定性 Impact Analysis（Workflow/Task 依赖闭包 + 显式 Resolution）→
+  Owner Approval（绑定 analysis digest）→ Successor Run + Run Lineage +
+  predecessor supersession → Canonical Artifact Promotion（`changes
+  list/show/create/stage/stage-config/retain/analyze/approve/reject/replan/close`）。
+  **A frozen Run is never silently rewritten**；Retry / Rework / Change 严格分离，
+  同一 Run 内仍禁止 executor reassignment；
 
 尚未实现（后续版本）：SaaS 后端、Web 控制台、云同步、Provider SDK /
 API-key 管理。
@@ -79,6 +90,8 @@ speccraft execute [--adapter <id>] [--parallel] [--max-parallel <n>]
                                            # 确定性执行整个 Task Graph（顺序或 worktree 并行）
 speccraft executors list|plan|doctor       # Executor Profile / frozen Plan / preflight 诊断
 speccraft reviews list|plan|doctor|show    # Review Plan / adapter diagnostics / evidence
+speccraft changes create|list|show|stage|stage-config|retain|analyze|approve|reject|replan|close
+                                           # Change Set 生命周期（v0.9，计划变更 → Successor Run）
 speccraft workspaces list|show|clean      # 工作区诊断（worktree / branch / status）
 speccraft verify                           # 运行项目验证命令（PASS/FAIL）
 speccraft accept [--note|--file] [--by]    # Owner 验收通过
@@ -120,6 +133,30 @@ OWNER ACCEPTANCE（人类验收）
       ↓
 HANDOFF（确定性交接）
 ```
+
+计划仍然正确但实现错误 → **REWORK → 同一 Run**；
+
+计划本身发生变化 → **CHANGE REQUEST → CHANGE SET → Impact Analysis →
+Owner Approval → SUCCESSOR RUN → 执行 → 验证 → Review → Owner Acceptance →
+Canonical Promotion → HANDOFF**。详见
+[docs/change-management.md](docs/change-management.md)。
+
+## Controlled Change Management（v0.9）
+
+```bash
+speccraft changes create --base-run <run-id> --reason "<text>"   # 提出 Change
+speccraft changes stage <id> --artifact <stage> --file <new.md>  # 隔离修改 proposal
+speccraft changes analyze <id>                                   # 确定性 Impact Analysis
+speccraft changes approve <id> --by <owner>                      # 绑定 analysis digest
+speccraft changes replan <id>                                    # 生成 Successor Run（不自动施工）
+speccraft changes close <id>                                     # Canonical Promotion
+```
+
+`A frozen Run is never silently rewritten`：变更必须产生 Successor Run，
+predecessor 被 supersede；Successor 未 `closed` 前 `handoff` 被阻止。
+
+详见 [docs/change-management.md](docs/change-management.md)，
+架构决策见 [docs/decisions/0010-controlled-change-management.md](docs/decisions/0010-controlled-change-management.md)。
 
 ## Agent Adapters
 
@@ -177,13 +214,14 @@ speccraft handoff   # 生成 .speccraft/handoffs/handoff-001/
 包含 `HANDOFF.md` / `context.md` / `decisions.md` / `execution-history.md` /
 `task-history.md` / `workspace-history.md`（并行 route）/ `executor-history.md`
 （v0.7，Task / Executor / Adapter / Provider Session）/ `verification-history.md` /
-`acceptance-history.md` / `manifest.yaml`。
+`acceptance-history.md` / `change-history.md`（v0.9，Successor Handoff）/
+`manifest.yaml`。
 确定性模板生成（不调用 AI），幂等（重复 handoff 不产生新包）。
 
 ## 核心 Workflow
 
 见 [docs/workflow/core-workflow.md](docs/workflow/core-workflow.md)。
-架构决策见 [docs/decisions/](docs/decisions/)（ADR 0002/0003/0004/0005/0006/0007/0008）。
+架构决策见 [docs/decisions/](docs/decisions/)（ADR 0002/0003/0004/0005/0006/0007/0008/0010）。
 
 ## Inspirations / Research Targets
 
@@ -200,13 +238,16 @@ speccraft handoff   # 生成 .speccraft/handoffs/handoff-001/
 
 本仓库当前 **未达到 Production Ready**。
 
-v0.7 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
+v0.9 已实现 Workflow 声明式状态机、Commands、Skills 注入、Execution Run、
 Verification / Owner Acceptance / Handoff Runtime、Adapter Runtime
 （manual + codex/claude/opencode/trae CLI Adapter）、Dispatch Runtime、
 Hook Runtime、Task Graph + 确定性顺序/并行编排（Git Worktree 隔离 +
 Scope Audit + 运行时提交 + 确定性集成）、异构多 Executor 路由
 （Executor Profile → frozen Executor Plan → Preflight → 顺序/并行执行 →
-故障/返工语义 → Recompile Guard → validate 不变量 → executor-history）。
+故障/返工语义 → Recompile Guard → validate 不变量 → executor-history）、
+Controlled Change Management（Change Set → 确定性 Impact Analysis →
+Owner Approval → Successor Run + Lineage + supersession → Canonical Promotion
+→ change-history handoff）。
 尚未实现：SaaS 后端、Web 控制台、云同步、Provider SDK / API-key 管理。
 
 ## License
